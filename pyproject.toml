@@ -1,0 +1,37 @@
+[project]
+name = "subway-builder-rmsp-demand-data"
+description = "Gera pops de demanda (Subway Builder / depot) a partir da Pesquisa OD 2023 do Metrô-SP"
+version = "1.0.0"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer",          # CLI
+    "pyshp",          # shapefile (zonas OD)
+    "dbfread",        # DBF (microdados OD)
+    "pyproj",         # reprojeta Córrego Alegre UTM 23S -> WGS84
+    "shapely",        # point-in-polygon (zonas) + geometria
+    "numpy",          # amostragem ponderada
+    "folium",         # mapa HTML
+    "python-dotenv",  # config via .env
+    "certifi",        # CA bundle p/ o FTP-over-HTTPS do IBGE (cadeia incompleta)
+]
+
+[project.scripts]
+demand-data = "demand_data.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/demand_data"]
+
+[dependency-groups]
+dev = ["ruff", "pytest"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

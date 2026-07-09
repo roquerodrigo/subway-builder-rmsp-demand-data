@@ -1,0 +1,3 @@
+# Dados-fonte versionados byte-a-byte (arquivos baixados pelo comando `sources`;
+# sem normalização de fim de linha, para preservar o download original).
+data/sources/** -text
