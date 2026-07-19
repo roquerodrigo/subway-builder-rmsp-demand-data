@@ -4,7 +4,9 @@ A OD é só nível de zona; para posicionar pontos dentro da zona segundo a dens
 pessoas usamos a população por setor (Censo 2022) distribuída sobre os endereços
 residenciais do CNEFE (cada endereço pesa pop_do_setor / nº_endereços_do_setor). Os
 endereços são agregados numa grade por zona; cada célula não vazia vira um ponto-candidato
-no seu centroide ponderado, com peso = atividade ali.
+com peso = atividade ali, posicionado no endereço REAL mais próximo do seu centroide
+ponderado — o centroide em si costuma cair no meio da rua, por ser a média dos dois lados
+da via.
 
 A grade é adaptativa: a agregação roda em ``base_cell`` e cada zona funde as células de volta
 até a grade padrão ``density_cell``, saindo dela só quando a demanda por ponto foge da faixa
@@ -75,6 +77,21 @@ def _cell(lng: float, lat: float) -> tuple[int, int]:
     return (int((lng - b[0]) / cs), int((lat - b[1]) / cs))
 
 
+def _off_center(lng: float, lat: float, cell: tuple[int, int]) -> float:
+    """Distância² do endereço ao centro geométrico da sua célula (em graus, só p/ comparar)."""
+    cs = settings.base_cell
+    b = settings.bbox
+    return (lng - (b[0] + (cell[0] + 0.5) * cs)) ** 2 + (lat - (b[1] + (cell[1] + 0.5) * cs)) ** 2
+
+
+def _keep_anchor(acc: list[float], lng: float, lat: float, cell: tuple[int, int]) -> None:
+    """Guarda na célula o endereço REAL mais central dela — o ponto é ancorado nele em vez de
+    no centroide ponderado, que costuma cair no meio da rua (média dos dois lados da via)."""
+    d2 = _off_center(lng, lat, cell)
+    if d2 < acc[5]:
+        acc[5], acc[6], acc[7] = d2, lng, lat
+
+
 def _line_offsets(path: Path, n: int) -> list[tuple[int, int]]:
     """Divide o arquivo em ~n intervalos de bytes alinhados a quebras de linha."""
     size = path.stat().st_size
@@ -95,8 +112,9 @@ def _line_offsets(path: Path, n: int) -> list[tuple[int, int]]:
 def _aggregate_chunk(
     cnefe: str, start: int, end: int, zones_shp: str, weights: dict[str, float]
 ) -> dict[tuple[int, tuple[int, int]], list[float]]:
-    """Agrega um intervalo do CNEFE em {(zona, célula): [rw, jw, w*lng, w*lat, w]}: peso
-    residencial (rw = pop do setor) e de emprego (jw = espécie), mais o centroide ponderado."""
+    """Agrega um intervalo do CNEFE em {(zona, célula): [rw, jw, w*lng, w*lat, w, d², lng, lat]}:
+    peso residencial (rw = pop do setor) e de emprego (jw = espécie), o centroide ponderado e o
+    endereço real mais central da célula."""
     zones = load_zones(Path(zones_shp))
     res = settings.cnefe_res_especies
     job = settings.cnefe_job_especies
@@ -128,15 +146,17 @@ def _aggregate_chunk(
             zone = zones.zone_of(lng, lat)
             if zone is None:
                 continue
-            key = (zone, _cell(lng, lat))
+            cell = _cell(lng, lat)
+            key = (zone, cell)
             e = acc.get(key)
             if e is None:
-                e = acc[key] = [0.0, 0.0, 0.0, 0.0, 0.0]
+                e = acc[key] = [0.0, 0.0, 0.0, 0.0, 0.0, float("inf"), 0.0, 0.0]
             e[0] += rw
             e[1] += jw
             e[2] += w * lng
             e[3] += w * lat
             e[4] += w
+            _keep_anchor(e, lng, lat, cell)
     return acc
 
 
@@ -165,15 +185,17 @@ def _lote_chunk(
                 continue
             rw = area if parts[2] == b"R" else 0.0
             jw = area if parts[2] == b"N" else 0.0
-            key = (zone, _cell(lng, lat))
+            cell = _cell(lng, lat)
+            key = (zone, cell)
             e = acc.get(key)
             if e is None:
-                e = acc[key] = [0.0, 0.0, 0.0, 0.0, 0.0]
+                e = acc[key] = [0.0, 0.0, 0.0, 0.0, 0.0, float("inf"), 0.0, 0.0]
             e[0] += rw
             e[1] += jw
             e[2] += area * lng
             e[3] += area * lat
             e[4] += area
+            _keep_anchor(e, lng, lat, cell)
     return acc
 
 
@@ -183,26 +205,31 @@ def _parallel_aggregate(worker, path: Path, zones_shp: Path, *extra):
     n = max(1, (os.cpu_count() or 2) - 1)
     ranges = _line_offsets(path, n)
     acc: dict[tuple[int, tuple[int, int]], list[float]] = defaultdict(
-        lambda: [0.0, 0.0, 0.0, 0.0, 0.0]
+        lambda: [0.0, 0.0, 0.0, 0.0, 0.0, float("inf"), 0.0, 0.0]
     )
     with ProcessPoolExecutor(max_workers=n) as ex:
         futs = [ex.submit(worker, str(path), s, e, str(zones_shp), *extra) for s, e in ranges]
         for fut in futs:
-            for key, (rw, jw, cl, ct, w) in fut.result().items():
+            for key, (rw, jw, cl, ct, w, d2, alng, alat) in fut.result().items():
                 a = acc[key]
                 a[0] += rw
                 a[1] += jw
                 a[2] += cl
                 a[3] += ct
                 a[4] += w
+                if d2 < a[5]:
+                    a[5], a[6], a[7] = d2, alng, alat
     return acc
 
 
-ZoneCells = dict[tuple[int, int], list[float]]  # célula da grade fina -> [rw, jw, wlng, wlat, w]
+# célula da grade fina -> [rw, jw, w*lng, w*lat, w, d², âncora_lng, âncora_lat]
+ZoneCells = dict[tuple[int, int], list[float]]
+# célula já fundida -> ([rw, jw, w*lng, w*lat, w], âncoras das células finas que a compõem)
+MergedCells = dict[tuple[int, int], tuple[list[float], list[tuple[float, float]]]]
 
 
 def _cells_by_zone(acc) -> dict[int, ZoneCells]:
-    """{zona: {célula: [rw, jw, w*lng, w*lat, w]}} na grade fina."""
+    """{zona: {célula: acumuladores}} na grade fina."""
     out: dict[int, ZoneCells] = defaultdict(dict)
     for (zone, cell), vals in acc.items():
         if vals[4] > 0:
@@ -210,20 +237,29 @@ def _cells_by_zone(acc) -> dict[int, ZoneCells]:
     return out
 
 
-def _coarsen(cells: ZoneCells, factor: int) -> ZoneCells:
-    """Funde a grade fina em células ``factor`` vezes maiores (alinhadas à grade global)."""
-    if factor <= 1:
-        return cells
-    out: ZoneCells = {}
+def _coarsen(cells: ZoneCells, factor: int) -> MergedCells:
+    """Funde a grade fina em células ``factor`` vezes maiores (alinhadas à grade global),
+    juntando as âncoras das células de origem."""
+    out: MergedCells = {}
     for (cx, cy), vals in cells.items():
-        key = (cx // factor, cy // factor)
-        acc = out.get(key)
-        if acc is None:
-            out[key] = list(vals)
-        else:
-            for i in range(5):
-                acc[i] += vals[i]
+        key = (cx // factor, cy // factor) if factor > 1 else (cx, cy)
+        entry = out.get(key)
+        if entry is None:
+            entry = out[key] = ([0.0] * 5, [])
+        acc, anchors = entry
+        for i in range(5):
+            acc[i] += vals[i]
+        if vals[5] != float("inf"):
+            anchors.append((vals[6], vals[7]))
     return out
+
+
+def _nearest_anchor(anchors, lng: float, lat: float) -> tuple[float, float]:
+    """Endereço real mais próximo do centroide ponderado da célula."""
+    if len(anchors) == 1:
+        return anchors[0]
+    kx, ky = settings.m_per_deg_lng, settings.m_per_deg_lat
+    return min(anchors, key=lambda a: ((a[0] - lng) * kx) ** 2 + ((a[1] - lat) * ky) ** 2)
 
 
 def _grid_scale() -> tuple[list[int], int, list[int]]:
@@ -244,7 +280,7 @@ def _grid_scale() -> tuple[list[int], int, list[int]]:
     return finer, default, coarser
 
 
-def _resolve(cells: ZoneCells, scale, n_min: int, n_max: int) -> tuple[ZoneCells, int]:
+def _resolve(cells: ZoneCells, scale, n_min: int, n_max: int) -> tuple[MergedCells, int]:
     """Grade da zona: parte do padrão e só sai dele para caber na faixa de demanda por ponto
     — afina enquanto tiver menos de ``n_min`` células, engrossa enquanto tiver mais de
     ``n_max``. O teto (``n_min``) manda: nunca engrossa a ponto de violá-lo."""
@@ -335,10 +371,12 @@ def zone_candidates(
         finer_zones += factor < default_factor
         coarser_zones += factor > default_factor
 
-        cells = [
-            (v[0], v[1], round(v[2] / v[4], 6), round(v[3] / v[4], 6))
-            for _k, v in sorted(cells_map.items())
-        ]
+        cells = []
+        for _k, (acc, anchors) in sorted(cells_map.items()):
+            if not anchors:
+                continue
+            lng, lat = _nearest_anchor(anchors, acc[2] / acc[4], acc[3] / acc[4])
+            cells.append((acc[0], acc[1], round(lng, 6), round(lat, 6)))
         zres = sum(c[0] for c in cells) or 1.0
         zjob = sum(c[1] for c in cells) or 1.0
         ranked = sorted(cells, key=lambda c: (c[1] / zjob - c[0] / zres, c[2], c[3]), reverse=True)
