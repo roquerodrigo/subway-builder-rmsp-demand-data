@@ -30,13 +30,14 @@ uv sync
 uv run demand-data sources    # baixa + processa OD/CNEFE/Censo -> data/sources/
 uv run demand-data generate   # OD + densidade -> pops -> out/demand_data.json + out/pops_map.html
 uv run demand-data od-only    # só a extração da OD (diagnóstico)
+./scripts/publish_map.sh      # publica out/pops_map.html no GitHub Pages (branch gh-pages)
 ```
 
 `generate` roda `sources` automaticamente se os dados ainda não estiverem em `data/sources`.
 
 Saídas em `out/`:
 - **`demand_data.json`** (+ `.gz`) — importável no depot (`DemandData`). Pops saem com `drivingSeconds/Distance = 0` para o depot rotear na importação.
-- **`pops_map.html`** — mapa dos pontos (raio ∝ tamanho, cor = balanço moradia×trabalho).
+- **`pops_map.html`** — mapa dos pontos (raio ∝ tamanho, cor = balanço moradia×trabalho). Versão publicada: **https://www.rodrigoroque.dev/subway-builder-rmsp-demand-data/**
 
 ## Configuração (`.env`)
 
