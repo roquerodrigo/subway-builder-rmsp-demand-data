@@ -34,6 +34,15 @@ uv run demand-data od-only    # só a extração da OD (diagnóstico)
 ./scripts/publish_map.sh      # publica out/pops_map.html no GitHub Pages (branch gh-pages)
 ```
 
+## Testes
+
+```bash
+uv run pytest        # cobertura mínima de 90% (hoje 100%), medida automaticamente
+uv run ruff check .
+```
+
+Os testes rodam sobre recortes minúsculos das fontes reais, no mesmo formato, sem rede nem os arquivos de ~1 GB. Além do comportamento normal, a suíte fixa as regressões dos problemas já corrigidos: concentração de empregos num único ponto, destinos O-D zerados pela repartição por número de pops, viés espacial no sorteio das células, pontos fora de construções reais e o mapa em branco quando o script roda antes do folium montar o mapa.
+
 `generate` roda `sources` automaticamente se os dados ainda não estiverem em `data/sources`.
 
 Saídas em `out/`:

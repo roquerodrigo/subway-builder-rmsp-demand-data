@@ -21,6 +21,7 @@ from collections import defaultdict
 import numpy as np
 
 from demand_data.config import settings
+from demand_data.density import Candidates
 
 log = logging.getLogger(__name__)
 
@@ -42,28 +43,18 @@ def _largest_remainder(weights, total: int) -> list[int]:
     return out.tolist()
 
 
-def _probs(cands: dict[int, list[tuple[float, float, float]]]) -> dict[int, np.ndarray | None]:
-    """Probabilidade por célula: ``equal_fraction`` uniforme (1/n) + resto ∝ peso — comprime
-    as células muito grandes e muito pequenas dentro de uma zona."""
-    eq = min(max(settings.equal_fraction, 0.0), 1.0)
-    out: dict[int, np.ndarray | None] = {}
-    for z, cs in cands.items():
-        w = np.array([c[2] for c in cs], dtype=float)
-        s, n = w.sum(), len(w)
-        out[z] = eq / n + (1 - eq) * w / s if s > 0 else None
-    return out
+def _alloc(size: int, n: int, rng) -> np.ndarray:
+    """Reparte ``n`` pops igualmente entre ``size`` pontos e embaralha, devolvendo o índice de
+    ponto de cada pop.
 
-
-def _alloc(probs: np.ndarray, n: int, rng) -> np.ndarray:
-    """Distribui ``n`` pops entre as células de forma DETERMINÍSTICA (round(n·p) por célula),
-    depois embaralha para descorrelacionar do destino. Retorna o índice de célula por pop.
-
-    Só é fiel a ``probs`` com ``n`` grande: em ``n`` pequeno o arredondamento sempre premia
-    as células de maior peso, então cada chamada precisa cobrir TODOS os pops daquela fonte
-    de células de uma vez (ver :func:`generate`), nunca um par origem-destino por vez.
+    Os pontos já foram sorteados ∝ densidade (ver :mod:`demand_data.density`), então cada um
+    representa a mesma fatia de demanda e a repartição aqui é uniforme. A repartição inteira
+    só é fiel com ``n`` grande — em ``n`` pequeno ela premia sempre os primeiros índices, e é
+    por isso que cada chamada precisa cobrir TODOS os pops daquela fonte de uma vez
+    (ver :func:`generate`), nunca um par origem-destino por vez.
     """
-    counts = _largest_remainder(probs, n)
-    idx = np.repeat(np.arange(len(probs)), counts)
+    counts = _largest_remainder(np.ones(size), n)
+    idx = np.repeat(np.arange(size), counts)
     rng.shuffle(idx)
     return idx
 
@@ -95,11 +86,9 @@ def _plan_destinations(
 
 
 def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
-             home_cands: dict[int, list[tuple[float, float, float]]],
-             work_cands: dict[int, list[tuple[float, float, float]]]):
-    """Constrói (points, pops): casa de células de casa, trabalho de células de trabalho."""
+             home_cands: Candidates, work_cands: Candidates):
+    """Constrói (points, pops): casa dos pontos de casa, trabalho dos pontos de trabalho."""
     rng = np.random.default_rng(settings.seed)
-    p_home, p_work = _probs(home_cands), _probs(work_cands)
 
     out_by_home: dict[int, list[tuple[int, float]]] = defaultdict(list)
     for (h, w), f in od.items():
@@ -108,7 +97,7 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
     points: dict[str, dict] = {}
     used: set[tuple[float, float]] = set()
 
-    def point(prefix: str, z: int, i: int, cands: list[tuple[float, float, float]]) -> str:
+    def point(prefix: str, z: int, i: int, cands: list[tuple[float, float]]) -> str:
         pid = f"z{z}{prefix}{i}"
         if pid in points:
             return pid
@@ -120,19 +109,19 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
         return pid
 
     # prefixos: casa h/hf, trabalho w/wf (o sufixo f é o fallback quando a zona não tem
-    # células daquele tipo). Prefixos distintos mantêm cada ponto de tipo único.
+    # pontos daquele tipo). Prefixos distintos mantêm cada ponto de tipo único.
     def home_src(z: int):
-        if p_home.get(z) is not None:
-            return home_cands[z], p_home[z], "h", z
-        if p_work.get(z) is not None:
-            return work_cands[z], p_work[z], "hf", z
+        if home_cands.get(z):
+            return home_cands[z], "h", z
+        if work_cands.get(z):
+            return work_cands[z], "hf", z
         return None
 
     def work_src(z: int):
-        if p_work.get(z) is not None:
-            return work_cands[z], p_work[z], "w", z
-        if p_home.get(z) is not None:
-            return home_cands[z], p_home[z], "wf", z
+        if work_cands.get(z):
+            return work_cands[z], "w", z
+        if home_cands.get(z):
+            return home_cands[z], "wf", z
         return None
 
     ppp = settings.people_per_pop
@@ -150,7 +139,7 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
     # a maioria dos pares origem-destino manda 1 ou 2 pops, e alocar par a par empilharia
     # todos eles na célula de maior peso da zona de destino.
     pending: dict[tuple[int, str], list[int]] = defaultdict(list)
-    work_cells: dict[tuple[int, str], tuple[list, np.ndarray]] = {}
+    work_points: dict[tuple[int, str], list[tuple[float, float]]] = {}
     for zone in elig:
         n = n_by_zone[zone]
         if n <= 0:
@@ -160,7 +149,7 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
         # funde os pops minúsculos das zonas esparsas em menos pops maiores.
         if settings.min_pop_size > 0:
             n = min(n, max(1, round(P / settings.min_pop_size)))
-        hc, hp, hpre, hz = home_src(zone)
+        hc, hpre, hz = home_src(zone)
 
         dests = sorted(out_by_home.get(zone, []), key=lambda x: x[1], reverse=True)
         if settings.dest_cap > 0:
@@ -171,17 +160,16 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
         if not plan:
             continue
 
-        h_idx = _alloc(hp, sum(k for _, k, _ in plan), rng)
+        h_idx = _alloc(len(hc), sum(k for _, k, _ in plan), rng)
         i = 0
         for wz, k, people in plan:
-            wc, wp, wpre, wzz = work_src(wz) or work_src(zone)
+            wc, wpre, wzz = work_src(wz) or work_src(zone)
             key = (wzz, wpre)
-            work_cells[key] = (wc, wp)
+            work_points[key] = wc
+            # k nunca passa de `people` (o tamanho-alvo é ≥ 1), então toda fatia sai positiva
             for sz in _largest_remainder(np.ones(k), people):
                 hi = int(h_idx[i])
                 i += 1
-                if sz <= 0:
-                    continue
                 rid = point(hpre, hz, hi, hc)
                 seq += 1
                 pops.append({"id": f"p{seq:06d}", "size": int(sz), "residenceId": rid,
@@ -190,10 +178,10 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
 
     for key in sorted(pending):
         wzz, wpre = key
-        wc, wp = work_cells[key]
+        wc = work_points[key]
         idxs = pending[key]
-        for i, cell in zip(idxs, _alloc(wp, len(idxs), rng), strict=True):
-            pops[i]["jobId"] = point(wpre, wzz, int(cell), wc)
+        for i, slot in zip(idxs, _alloc(len(wc), len(idxs), rng), strict=True):
+            pops[i]["jobId"] = point(wpre, wzz, int(slot), wc)
 
     _aggregate(points, pops)
     res_pts = sum(1 for p in points.values() if p["residents"] > 0)

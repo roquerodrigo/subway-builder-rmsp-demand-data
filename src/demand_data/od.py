@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import collections
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,20 +64,18 @@ def _as_int(v) -> int | None:
         return None
 
 
-def extract_od(
-    dbf_path: Path, zones: set[int]
+def accumulate_od(
+    records: Iterable[dict], zones: set[int]
 ) -> tuple[dict[int, float], dict[tuple[int, int], float]]:
-    """Uma passada no microdado: (população por zona, matriz O-D casa→trabalho).
+    """(população por zona, matriz O-D casa→trabalho) a partir dos registros da pesquisa.
 
     Deduplica por pessoa (ID_DOM, ID_FAM, ID_PESS) via FE_PESS. Só conta pares cujas duas
     zonas estão em ``zones`` (intra-zona hz==wz é demanda local real e é mantida).
     """
-    from dbfread import DBF
-
     pop: dict[int, float] = collections.defaultdict(float)
     od: dict[tuple[int, int], float] = collections.defaultdict(float)
     seen: set[tuple] = set()
-    for r in DBF(str(dbf_path), encoding="latin-1", raw=False):
+    for r in records:
         key = (r.get("ID_DOM"), r.get("ID_FAM"), r.get("ID_PESS"))
         if key in seen:
             continue
@@ -90,11 +89,21 @@ def extract_od(
         wz = _as_int(r.get("ZONATRA1"))
         if hz in zones and wz in zones:
             od[(hz, wz)] += fp
+    return dict(pop), dict(od)
+
+
+def extract_od(
+    dbf_path: Path, zones: set[int]
+) -> tuple[dict[int, float], dict[tuple[int, int], float]]:
+    """Uma passada no microdado DBF -> :func:`accumulate_od`."""
+    from dbfread import DBF
+
+    pop, od = accumulate_od(DBF(str(dbf_path), encoding="latin-1", raw=False), zones)
     log.info(
         "população: Σ=%.0f em %d zonas | matriz O-D: %d pares (Σ=%.0f)",
         sum(pop.values()), len(pop), len(od), sum(od.values()),
     )
-    return dict(pop), dict(od)
+    return pop, od
 
 
 def demand_by_zone(

@@ -49,8 +49,6 @@ class Settings:
     # tamanho mínimo de pop: limita nº de pops da zona a P/min_pop_size, fundindo os pops
     # minúsculos das zonas esparsas em menos pops maiores. 0 = sem limite.
     min_pop_size: int = _env_int("DEMAND_MIN_POP_SIZE", 50)
-    # dentro da zona, fração da demanda distribuída IGUALMENTE entre as células (resto ∝ peso).
-    equal_fraction: float = _env_float("DEMAND_EQUAL_FRACTION", 0.75)
 
     # COD_ESPECIE 1,2 = domicílio; cada endereço pesa pop_do_setor / nº_endereços_do_setor.
     cnefe_res_especies: frozenset[int] = frozenset({1, 2})

@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 # teto de pessoas/endereço (evita setores com pop >> nº de endereços dominarem a densidade)
 _MAX_ADDR_WEIGHT = 50.0
 
-Candidates = dict[int, list[tuple[float, float, float]]]  # {zona: [(lng, lat, peso), ...]}
+Candidates = dict[int, list[tuple[float, float]]]  # {zona: [(lng, lat), ...]}
 
 
 def _setor_pop(path: Path) -> dict[str, float]:
@@ -236,17 +236,16 @@ def _parallel_aggregate(worker, path: Path, zones_shp: Path, *extra):
     return acc
 
 
-# célula da grade fina -> [rw, jw, w*lng, w*lat, w, d², âncora_lng, âncora_lat]
+# célula -> [peso_casa, peso_trabalho, w*lng, w*lat, w, sorteio, âncora_lng, âncora_lat]
 ZoneCells = dict[tuple[int, int], list[float]]
-# célula já fundida -> ([rw, jw, w*lng, w*lat, w], âncoras das células finas que a compõem)
-MergedCells = dict[tuple[int, int], tuple[list[float], list[tuple[float, float]]]]
+_HOME, _WORK, _WEIGHT, _DRAW, _LNG, _LAT = 0, 1, 4, 5, 6, 7
 
 
 def _cells_by_zone(acc) -> dict[int, ZoneCells]:
-    """{zona: {célula: acumuladores}} na grade fina."""
+    """{zona: {célula: acumuladores}}."""
     out: dict[int, ZoneCells] = defaultdict(dict)
     for (zone, cell), vals in acc.items():
-        if vals[4] > 0:
+        if vals[_WEIGHT] > 0:
             out[zone][cell] = list(vals)
     return out
 
@@ -261,7 +260,7 @@ def _draw_cells(cells: ZoneCells, weight_index: int, k: int, taken=frozenset()) 
     if k <= 0:
         return []
     pool = [(key, vals[weight_index]) for key, vals in cells.items()
-            if vals[weight_index] > 0 and vals[5] >= 0 and key not in taken]
+            if vals[weight_index] > 0 and vals[_DRAW] >= 0 and key not in taken]
     if len(pool) <= k:
         return [key for key, _w in pool]
     scored = ((math.log(_unit_hash(key[0], key[1], weight_index)) / w, key) for key, w in pool)
@@ -272,6 +271,46 @@ def _point_count(demand: float) -> int:
     if demand <= 0:
         return 0
     return max(1, round(demand / settings.people_per_point))
+
+
+def merge_lote_zones(by_zone: dict[int, ZoneCells], lote_zones: dict[int, ZoneCells]):
+    """Troca a densidade CNEFE pela dos lotes nas zonas bem cobertas pelo GeoSampa.
+
+    Cobertura baixa é borda da capital: a amostra de lotes ali não representa a zona, então
+    fica o CNEFE, que cobre a RMSP inteira. Devolve (zonas trocadas, zonas descartadas).
+    """
+    used = 0
+    for zone, cells in lote_zones.items():
+        cnefe_n = len(by_zone.get(zone, []))
+        if cnefe_n == 0 or len(cells) >= settings.lote_min_coverage * cnefe_n:
+            by_zone[zone] = cells
+            used += 1
+    return used, len(lote_zones) - used
+
+
+def select_candidates(
+    by_zone: dict[int, ZoneCells], demand: dict[int, tuple[float, float]]
+) -> tuple[Candidates, Candidates, int]:
+    """(casa, trabalho, zonas sem endereços suficientes) sorteando os pontos de cada zona.
+
+    Trabalho sorteia primeiro e casa evita as células já usadas, para que nenhum ponto
+    acumule os dois papéis.
+    """
+    home_out: dict[int, list[tuple[float, float]]] = defaultdict(list)
+    work_out: dict[int, list[tuple[float, float]]] = defaultdict(list)
+    short = 0
+    for zone in sorted(by_zone):
+        res, job = demand.get(zone, (0.0, 0.0))
+        cells = by_zone[zone]
+        work_keys = _draw_cells(cells, _WORK, _point_count(job))
+        home_keys = _draw_cells(cells, _HOME, _point_count(res), taken=set(work_keys))
+        if len(work_keys) + len(home_keys) < _point_count(res) + _point_count(job):
+            short += 1
+        for keys, out in ((work_keys, work_out), (home_keys, home_out)):
+            for key in keys:
+                vals = cells[key]
+                out[zone].append((round(vals[_LNG], 6), round(vals[_LAT], 6)))
+    return dict(home_out), dict(work_out), short
 
 
 def zone_candidates(
@@ -292,45 +331,19 @@ def zone_candidates(
 
     if settings.lotes_csv.exists():
         lote_zones = _cells_by_zone(_parallel_aggregate(_lote_chunk, settings.lotes_csv, zones_shp))
-        used = 0
-        for zone, cells in lote_zones.items():
-            # só troca pro lote se a zona for bem coberta (senão é borda da capital com amostra
-            # não-representativa → mantém CNEFE, que cobre a RMSP inteira)
-            cnefe_n = len(by_zone.get(zone, []))
-            if cnefe_n == 0 or len(cells) >= settings.lote_min_coverage * cnefe_n:
-                by_zone[zone] = cells
-                used += 1
+        used, dropped = merge_lote_zones(by_zone, lote_zones)
         log.info(
             "densidade híbrida: %d zonas usam lotes GeoSampa, %d no CNEFE "
             "(%d zonas de borda descartadas)",
-            used, len(by_zone) - used, len(lote_zones) - used,
+            used, len(by_zone) - used, dropped,
         )
 
-    home_out: dict[int, list[tuple[float, float, float]]] = defaultdict(list)
-    work_out: dict[int, list[tuple[float, float, float]]] = defaultdict(list)
-    capped = 0
-    for zone in sorted(by_zone):
-        res, job = demand.get(zone, (0.0, 0.0))
-        cells = by_zone[zone]
-        wanted = _point_count(res) + _point_count(job)
-
-        work_keys = _draw_cells(cells, 1, _point_count(job))
-        home_keys = _draw_cells(cells, 0, _point_count(res), taken=set(work_keys))
-        if len(work_keys) + len(home_keys) < wanted:
-            capped += 1
-
-        for key in work_keys:
-            vals = cells[key]
-            work_out[zone].append((round(vals[6], 6), round(vals[7], 6), 1.0))
-        for key in home_keys:
-            vals = cells[key]
-            home_out[zone].append((round(vals[6], 6), round(vals[7], 6), 1.0))
-
+    home_out, work_out, short = select_candidates(by_zone, demand)
     log.info(
         "pontos sorteados ∝ densidade: %d casa / %d trabalho em %d zonas "
         "(1 a cada %.0f pessoas, grade de %.0f m; %d zonas sem endereços suficientes)",
         sum(len(v) for v in home_out.values()), sum(len(v) for v in work_out.values()),
         len(by_zone), settings.people_per_point,
-        settings.density_cell * settings.m_per_deg_lat, capped,
+        settings.density_cell * settings.m_per_deg_lat, short,
     )
-    return dict(home_out), dict(work_out)
+    return home_out, work_out
