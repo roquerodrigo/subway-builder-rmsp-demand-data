@@ -9,7 +9,7 @@ Projeto enxuto e **autossuficiente**: baixa e processa os próprios dados das pe
 1. **Total ∝ pessoas, repartido ∝ área** — o total de pops é `Σ round(população_da_zona / people_per_pop)` e é distribuído entre as zonas proporcionalmente à **área**, para que o mapa não fique com pops muito mais densos no centro. A população vem da própria pesquisa (`FE_PESS` por zona de residência).
 2. **Distribuição por densidade** — a residência de cada pop é amostrada entre pontos-candidato da zona **proporcional à densidade populacional**; setores (Censo 2022) com mais gente recebem mais pontos.
 3. **Destino pela matriz O-D** — o local de trabalho de cada pop é sorteado pela matriz origem→destino da pesquisa e posicionado na zona de destino, também por densidade.
-4. **Resolução ∝ demanda** — a grade de pontos-candidato é refinada zona a zona até que nenhum ponto passe de `max_demand_per_point` pessoas, e as células são repartidas entre casa e trabalho proporcionalmente à demanda da zona. Sem isso, as zonas centrais (pequenas e com muito emprego) concentrariam centenas de milhares de empregos em meia dúzia de pontos.
+4. **Resolução ∝ demanda** — a grade de pontos-candidato é **~500 m por padrão** e cada zona só sai disso quando a demanda por ponto foge da faixa `[min_demand_per_point, max_demand_per_point]`: **afina até ~100 m** onde a demanda é concentrada (zonas centrais, muito emprego em pouca área) e **condensa até ~5 km** onde é rarefeita (zonas periféricas grandes, que senão virariam muitos pontos minúsculos). As células são então repartidas entre casa e trabalho proporcionalmente à demanda da zona.
 
 `Σ tamanho dos pops == população total` (invariante).
 
@@ -42,7 +42,7 @@ Saídas em `out/`:
 
 ## Configuração (`.env`)
 
-Veja `.env.example`. Principais: `DEMAND_PEOPLE_PER_POP` (pessoas/pop, controla o total), `DEMAND_DENSITY_CELL` (resolução base da grade de densidade), `DEMAND_MAX_PER_POINT` (teto de pessoas por ponto, controla o refino da grade), `DEMAND_DEST_CAP` (destinos O-D por origem), `DEMAND_SOURCES_DIR` (onde estão os dados).
+Veja `.env.example`. Principais: `DEMAND_PEOPLE_PER_POP` (pessoas/pop, controla o total), `DEMAND_DENSITY_CELL` (resolução padrão da grade de densidade) com `DEMAND_DENSITY_CELL_MIN`/`_MAX` (limites do refino e da condensação), `DEMAND_MAX_PER_POINT`/`DEMAND_MIN_PER_POINT` (faixa de pessoas por ponto, que decide a grade de cada zona), `DEMAND_DEST_CAP` (destinos O-D por origem), `DEMAND_SOURCES_DIR` (onde estão os dados).
 
 ## Estrutura
 

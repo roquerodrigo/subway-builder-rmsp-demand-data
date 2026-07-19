@@ -7,14 +7,17 @@ endereços são agregados numa grade por zona; cada célula não vazia vira um p
 no seu centroide ponderado, com peso = atividade ali.
 
 A grade é adaptativa: a agregação roda em ``base_cell`` e cada zona funde as células de volta
-até ``density_cell``, parando antes se a demanda por ponto passar de ``max_demand_per_point``.
-Assim as zonas centrais, que concentram muito emprego em pouca área, ganham resolução sem
-inflar o resto da RMSP.
+até a grade padrão ``density_cell``, saindo dela só quando a demanda por ponto foge da faixa
+[``min_demand_per_point``, ``max_demand_per_point``] — afina até ``density_cell_min`` onde a
+demanda é concentrada (zonas centrais, muito emprego em pouca área) e engrossa até
+``density_cell_max`` onde é rarefeita (zonas periféricas grandes, que senão virariam muitos
+pontos minúsculos).
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -223,15 +226,45 @@ def _coarsen(cells: ZoneCells, factor: int) -> ZoneCells:
     return out
 
 
-def _resolve(cells: ZoneCells, target: int) -> tuple[ZoneCells, int]:
-    """Grade mais grossa (múltiplo da fina) que ainda dê ``target`` células na zona."""
-    factor = max(1, settings.density_subdiv)
+def _grid_scale() -> tuple[list[int], int, list[int]]:
+    """(mais finas, padrão, mais grossas) em múltiplos de ``base_cell``, dobrando a partir do
+    padrão até os limites ``density_cell_min``/``density_cell_max``."""
+    base = settings.base_cell
+    default = max(1, round(settings.density_cell / base))
+    coarsest = max(default, round(settings.density_cell_max / base))
+
+    finer, factor = [], default
     while factor > 1:
-        merged = _coarsen(cells, factor)
-        if len(merged) >= target:
-            return merged, factor
-        factor //= 2
-    return cells, 1
+        factor = max(1, factor // 2)
+        finer.append(factor)
+    coarser, factor = [], default
+    while factor < coarsest:
+        factor = min(coarsest, factor * 2)
+        coarser.append(factor)
+    return finer, default, coarser
+
+
+def _resolve(cells: ZoneCells, scale, n_min: int, n_max: int) -> tuple[ZoneCells, int]:
+    """Grade da zona: parte do padrão e só sai dele para caber na faixa de demanda por ponto
+    — afina enquanto tiver menos de ``n_min`` células, engrossa enquanto tiver mais de
+    ``n_max``. O teto (``n_min``) manda: nunca engrossa a ponto de violá-lo."""
+    finer, default, coarser = scale
+    merged, chosen = _coarsen(cells, default), default
+
+    if len(merged) < n_min:
+        for factor in finer:
+            merged, chosen = _coarsen(cells, factor), factor
+            if len(merged) >= n_min:
+                break
+    elif len(merged) > n_max:
+        for factor in coarser:
+            candidate = _coarsen(cells, factor)
+            if len(candidate) < n_min:
+                break
+            merged, chosen = candidate, factor
+            if len(candidate) <= n_max:
+                break
+    return merged, chosen
 
 
 def _work_count(cells: list[tuple[float, float, float, float]], res: float, job: float) -> int:
@@ -262,11 +295,10 @@ def zone_candidates(
 ) -> tuple[Candidates, Candidates]:
     """(casa, trabalho): pipeline ÚNICA de células dividida por vocação.
 
-    Cada célula vira UM ponto no centroide ponderado. A resolução é por zona: a grade mais
-    grossa que ainda dê um ponto a cada ``max_demand_per_point`` pessoas de ``demand``
-    ``{zona: (moradores, trabalhadores)}``, para que as zonas de demanda concentrada não
-    fiquem com poucos pontos gigantes. As células vão para trabalho ou casa ∝ à demanda da
-    zona, as de vocação mais forte primeiro; tipos disjuntos.
+    Cada célula vira UM ponto no centroide ponderado. A resolução é por zona: parte da grade
+    padrão e afina ou engrossa até que a demanda por ponto de ``demand``
+    ``{zona: (moradores, trabalhadores)}`` caia na faixa configurada. As células vão para
+    trabalho ou casa ∝ à demanda da zona, as de vocação mais forte primeiro; tipos disjuntos.
     Densidade híbrida: lotes do GeoSampa nas zonas da capital bem cobertas por ``lotes.csv``,
     CNEFE no resto da RMSP.
     """
@@ -290,14 +322,18 @@ def zone_candidates(
 
     home_out: dict[int, list[tuple[float, float, float]]] = defaultdict(list)
     work_out: dict[int, list[tuple[float, float, float]]] = defaultdict(list)
-    cap = settings.max_demand_per_point
-    refined = 0
+    scale = _grid_scale()
+    default_factor = scale[1]
+    cap, floor = settings.max_demand_per_point, settings.min_demand_per_point
+    finer_zones = coarser_zones = 0
     for zone in sorted(by_zone):
         res, job = demand.get(zone, (0.0, 0.0))
-        target = max(1, -(-int(res + job) // int(cap))) if cap > 0 else 1
-        cells_map, factor = _resolve(by_zone[zone], target)
-        if factor < settings.density_subdiv:
-            refined += 1
+        total = res + job
+        n_min = max(1, math.ceil(total / cap)) if cap > 0 else 1
+        n_max = max(n_min, int(total // floor)) if floor > 0 else len(by_zone[zone])
+        cells_map, factor = _resolve(by_zone[zone], scale, n_min, n_max)
+        finer_zones += factor < default_factor
+        coarser_zones += factor > default_factor
 
         cells = [
             (v[0], v[1], round(v[2] / v[4], 6), round(v[3] / v[4], 6))
@@ -313,8 +349,11 @@ def zone_candidates(
             home_out[zone].append((lng, lat, rw))
 
     log.info(
-        "células: %d casa / %d trabalho em %d zonas (%d zonas refinadas abaixo de %.0f m)",
+        "células: %d casa / %d trabalho em %d zonas | grade %.0f m no padrão, "
+        "%d zonas afinadas (até %.0f m), %d condensadas (até %.0f m)",
         sum(len(v) for v in home_out.values()), sum(len(v) for v in work_out.values()),
-        len(by_zone), refined, settings.density_cell * settings.m_per_deg_lat,
+        len(by_zone), settings.density_cell * settings.m_per_deg_lat,
+        finer_zones, settings.density_cell_min * settings.m_per_deg_lat,
+        coarser_zones, settings.density_cell_max * settings.m_per_deg_lat,
     )
     return dict(home_out), dict(work_out)

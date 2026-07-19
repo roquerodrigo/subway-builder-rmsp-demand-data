@@ -37,15 +37,17 @@ class Settings:
     # TOTAL de pops = Σ_zona round(pop_zona / people_per_pop), distribuído entre as zonas
     # ∝ ÁREA (não população). Menor = mais pops.
     people_per_pop: float = _env_float("DEMAND_PEOPLE_PER_POP", 300.0)
-    # grade (graus) de agregação da densidade em células (~500 m a -23.5°). Menor = mais pontos.
+    # grade (graus) PADRÃO de agregação da densidade em células (~500 m a -23.5°).
     density_cell: float = _env_float("DEMAND_DENSITY_CELL", 0.0045)
-    # a agregação roda numa grade density_cell/density_subdiv e cada zona funde as células de
-    # volta até a grade mais grossa que ainda respeite max_demand_per_point — só as zonas de
-    # demanda concentrada ficam finas. Potência de 2.
-    density_subdiv: int = _env_int("DEMAND_DENSITY_SUBDIV", 4)
-    # teto de pessoas (moradores + trabalhadores) por ponto: define quantas células a zona
-    # precisa. 0 = sem refino (grade fixa em density_cell).
+    # a grade da zona sai do padrão só quando a demanda por ponto foge da faixa
+    # [min_demand_per_point, max_demand_per_point]: afina até density_cell_min onde a demanda
+    # é concentrada, engrossa até density_cell_max onde é rarefeita.
+    density_cell_min: float = _env_float("DEMAND_DENSITY_CELL_MIN", 0.0009)  # ~100 m
+    density_cell_max: float = _env_float("DEMAND_DENSITY_CELL_MAX", 0.045)  # ~5 km
+    # teto de pessoas (moradores + trabalhadores) por ponto: abaixo dele a zona afina.
     max_demand_per_point: float = _env_float("DEMAND_MAX_PER_POINT", 5000.0)
+    # piso de pessoas por ponto: evita espalhar zonas rarefeitas em muitos pontos minúsculos.
+    min_demand_per_point: float = _env_float("DEMAND_MIN_PER_POINT", 500.0)
     seed: int = _env_int("DEMAND_SEED", 42)
     # destinos de trabalho por zona de origem (0 = todos). Não altera o total de pops.
     dest_cap: int = _env_int("DEMAND_DEST_CAP", 0)
@@ -110,8 +112,8 @@ class Settings:
 
     @property
     def base_cell(self) -> float:
-        """Grade fina da agregação; as zonas fundem múltiplos dela até density_cell."""
-        return self.density_cell / max(1, self.density_subdiv)
+        """Grade da agregação; cada zona funde um múltiplo inteiro dela."""
+        return min(self.density_cell_min, self.density_cell)
 
     @property
     def od_dir(self) -> Path:
