@@ -42,12 +42,12 @@ class Settings:
     # a grade da zona sai do padrão só quando a demanda por ponto foge da faixa
     # [min_demand_per_point, max_demand_per_point]: afina até density_cell_min onde a demanda
     # é concentrada, engrossa até density_cell_max onde é rarefeita.
-    density_cell_min: float = _env_float("DEMAND_DENSITY_CELL_MIN", 0.0009)  # ~100 m
-    density_cell_max: float = _env_float("DEMAND_DENSITY_CELL_MAX", 0.045)  # ~5 km
+    density_cell_min: float = _env_float("DEMAND_DENSITY_CELL_MIN", 0.00045)  # ~50 m
+    density_cell_max: float = _env_float("DEMAND_DENSITY_CELL_MAX", 0.09)  # ~10 km
     # teto de pessoas (moradores + trabalhadores) por ponto: abaixo dele a zona afina.
-    max_demand_per_point: float = _env_float("DEMAND_MAX_PER_POINT", 5000.0)
+    max_demand_per_point: float = _env_float("DEMAND_MAX_PER_POINT", 2500.0)
     # piso de pessoas por ponto: evita espalhar zonas rarefeitas em muitos pontos minúsculos.
-    min_demand_per_point: float = _env_float("DEMAND_MIN_PER_POINT", 500.0)
+    min_demand_per_point: float = _env_float("DEMAND_MIN_PER_POINT", 250.0)
     seed: int = _env_int("DEMAND_SEED", 42)
     # destinos de trabalho por zona de origem (0 = todos). Não altera o total de pops.
     dest_cap: int = _env_int("DEMAND_DEST_CAP", 0)
