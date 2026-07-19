@@ -9,7 +9,7 @@ Projeto enxuto e **autossuficiente**: baixa e processa os próprios dados das pe
 1. **Tamanho do pop ∝ área** — o orçamento de pops (`Σ round(população_da_zona / people_per_pop)`) é distribuído entre as zonas proporcionalmente à **área**, e é isso que define o tamanho típico do pop de cada zona, para que o mapa não fique com pops muito mais densos no centro. A população vem da própria pesquisa (`FE_PESS` por zona de residência).
 2. **Distribuição por densidade** — a residência de cada pop é amostrada entre pontos-candidato da zona **proporcional à densidade populacional**; setores (Censo 2022) com mais gente recebem mais pontos. Cada ponto-candidato fica sobre um **endereço ou lote real** (o mais próximo do centroide da sua célula), e não sobre o centroide em si, que por ser a média dos dois lados da via cairia no meio da rua.
 3. **Destino pela matriz O-D** — as **pessoas** da zona são repartidas entre os destinos proporcionalmente à matriz origem→destino da pesquisa e viram pops do tamanho da zona (repartir o *número de pops* zeraria os destinos de fluxo menor). O local de trabalho é posicionado na zona de destino, também por densidade.
-4. **Resolução ∝ demanda** — a grade de pontos-candidato é **~500 m por padrão** e cada zona só sai disso quando a demanda por ponto foge da faixa `[min_demand_per_point, max_demand_per_point]`: **afina até ~50 m** onde a demanda é concentrada (zonas centrais, muito emprego em pouca área) e **condensa até ~10 km** onde é rarefeita (zonas periféricas grandes, que senão virariam muitos pontos minúsculos). As células são então repartidas entre casa e trabalho proporcionalmente à demanda da zona.
+4. **Pontos sorteados ∝ densidade** — cada zona recebe `demanda / people_per_point` pontos de moradia e de trabalho, sorteados entre as células de ~50 m da zona com probabilidade proporcional ao peso (gente ou área construída) de cada uma. Usar *todas* as células desenharia a grade no mapa, com pontos alinhados e igualmente espaçados; sorteando, eles se adensam onde há gente e somem onde não há. Como o sorteio já é proporcional à densidade, todo ponto carrega aproximadamente a mesma demanda — quem representa a densidade é a **quantidade** de pontos, não o tamanho de cada um.
 
 `Σ tamanho dos pops == população total` (invariante).
 
@@ -42,7 +42,7 @@ Saídas em `out/`:
 
 ## Configuração (`.env`)
 
-Veja `.env.example`. Principais: `DEMAND_PEOPLE_PER_POP` (pessoas/pop, controla o total), `DEMAND_DENSITY_CELL` (resolução padrão da grade de densidade) com `DEMAND_DENSITY_CELL_MIN`/`_MAX` (limites do refino e da condensação), `DEMAND_MAX_PER_POINT`/`DEMAND_MIN_PER_POINT` (faixa de pessoas por ponto, que decide a grade de cada zona), `DEMAND_DEST_CAP` (destinos O-D por origem), `DEMAND_SOURCES_DIR` (onde estão os dados).
+Veja `.env.example`. Principais: `DEMAND_PEOPLE_PER_POP` (pessoas/pop, controla o total), `DEMAND_PEOPLE_PER_POINT` (pessoas por ponto, controla quantos pontos cada zona recebe), `DEMAND_DENSITY_CELL` (grade de agregação/espaçamento mínimo), `DEMAND_DEST_CAP` (destinos O-D por origem), `DEMAND_SOURCES_DIR` (onde estão os dados).
 
 ## Estrutura
 
