@@ -89,8 +89,11 @@ def _chunk_config() -> dict:
 
 def _cell(lng: float, lat: float, config: dict | None = None) -> tuple[int, int]:
     cs = config["cell"] if config else settings.density_cell
+    # um grau de longitude é ~8% mais curto que um de latitude nesta latitude, então usar o
+    # mesmo passo nos dois eixos daria células retangulares
+    cs_lng = cs * settings.m_per_deg_lat / settings.m_per_deg_lng
     b = config["bbox"] if config else settings.bbox
-    return (int((lng - b[0]) / cs), int((lat - b[1]) / cs))
+    return (int((lng - b[0]) / cs_lng), int((lat - b[1]) / cs))
 
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF

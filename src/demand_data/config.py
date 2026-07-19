@@ -49,6 +49,9 @@ class Settings:
     # tamanho mínimo de pop: limita nº de pops da zona a P/min_pop_size, fundindo os pops
     # minúsculos das zonas esparsas em menos pops maiores. 0 = sem limite.
     min_pop_size: int = _env_int("DEMAND_MIN_POP_SIZE", 50)
+    # tamanho máximo de pop: um pop é indivisível na simulação, então os grandes são
+    # fatiados. 0 = sem limite.
+    max_pop_size: int = _env_int("DEMAND_MAX_POP_SIZE", 500)
 
     # COD_ESPECIE 1,2 = domicílio; cada endereço pesa pop_do_setor / nº_endereços_do_setor.
     cnefe_res_especies: frozenset[int] = frozenset({1, 2})

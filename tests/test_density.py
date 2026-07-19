@@ -7,6 +7,7 @@ import pytest
 from tests.conftest import BASE_LAT, BASE_LNG, cells
 
 from demand_data import density
+from demand_data.config import settings
 
 
 def test_unit_hash_e_deterministico():
@@ -33,9 +34,10 @@ def test_regressao_unit_hash_espalha_entradas_vizinhas():
 
 def test_cell_indexa_pela_grade_configurada(configure):
     configure(density, density_cell=0.001, bbox=(-47.0, -24.0, -45.0, -23.0))
+    step_lng = 0.001 * settings.m_per_deg_lat / settings.m_per_deg_lng
     assert density._cell(-47.0, -24.0) == (0, 0)
     assert density._cell(-46.9995, -23.9995) == (0, 0)
-    assert density._cell(-46.998, -23.997) == (2, 3)
+    assert density._cell(-47.0 + 2 * step_lng, -23.997) == (2, 3)
 
 
 def test_keep_anchor_fica_com_o_maior_sorteio():
@@ -373,3 +375,17 @@ def test_lote_chunk_descarta_lote_fora_das_zonas(configure, zones_shp, tmp_path)
     path = tmp_path / "lotes.csv"
     path.write_text(f"{BASE_LNG - 5},{BASE_LAT - 5},R,200\n", encoding="ascii")
     assert density._lote_chunk(str(path), 0, path.stat().st_size, str(zones_shp), config) == {}
+
+
+def test_cell_compensa_a_distorcao_longitudinal(configure):
+    """Sem compensar, a célula sairia ~8% mais estreita em longitude do que em latitude."""
+    configure(density, density_cell=0.001, bbox=(-47.0, -24.0, -45.0, -23.0))
+    steps_lng = 0
+    while density._cell(-47.0 + (steps_lng + 1) * 0.0001, -24.0) == (0, 0):
+        steps_lng += 1
+    steps_lat = 0
+    while density._cell(-47.0, -24.0 + (steps_lat + 1) * 0.0001) == (0, 0):
+        steps_lat += 1
+    width = (steps_lng + 1) * 0.0001 * settings.m_per_deg_lng
+    height = (steps_lat + 1) * 0.0001 * settings.m_per_deg_lat
+    assert abs(width - height) / height < 0.05, f"célula de {width:.0f}x{height:.0f} m"

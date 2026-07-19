@@ -183,6 +183,9 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
         for i, slot in zip(idxs, _alloc(len(wc), len(idxs), rng), strict=True):
             pops[i]["jobId"] = point(wpre, wzz, int(slot), wc)
 
+    pops = merge_identical_commutes(pops)
+    pops = split_oversized(pops, settings.max_pop_size)
+
     _aggregate(points, pops)
     res_pts = sum(1 for p in points.values() if p["residents"] > 0)
     job_pts = sum(1 for p in points.values() if p["jobs"] > 0)
@@ -191,6 +194,44 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
         len(points), res_pts, job_pts, len(pops), sum(p["size"] for p in pops),
     )
     return list(points.values()), pops
+
+
+def merge_identical_commutes(pops: list[dict]) -> list[dict]:
+    """Funde pops que ligam exatamente o mesmo par casa-trabalho — no jogo eles seriam a
+    mesma viagem repetida, e cada um custa uma entrada no arquivo."""
+    merged: dict[tuple[str, str], dict] = {}
+    for pop in pops:
+        key = (pop["residenceId"], pop["jobId"])
+        first = merged.get(key)
+        if first is None:
+            merged[key] = pop
+        else:
+            first["size"] += pop["size"]
+    return list(merged.values())
+
+
+def split_oversized(pops: list[dict], limit: int) -> list[dict]:
+    """Quebra pops acima de ``limit`` pessoas em fatias iguais.
+
+    Um pop é indivisível na simulação: deixar 3 mil pessoas num só faz a rede atender todas
+    ou nenhuma.
+    """
+    if limit <= 0:
+        return pops
+    out: list[dict] = []
+    for pop in pops:
+        size = pop["size"]
+        if size <= limit:
+            out.append(pop)
+            continue
+        parts = -(-size // limit)
+        for index, slice_size in enumerate(_largest_remainder(np.ones(parts), size)):
+            piece = dict(pop)
+            piece["size"] = int(slice_size)
+            if index:
+                piece["id"] = f"{pop['id']}_{index}"
+            out.append(piece)
+    return out
 
 
 def _aggregate(points: dict[str, dict], pops: list[dict]) -> None:

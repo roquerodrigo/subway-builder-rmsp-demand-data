@@ -347,3 +347,39 @@ def test_generate_pula_zona_cuja_populacao_arredonda_para_zero(configure):
     )
     assert generated
     assert 2 not in {zone_of(p["id"]) for p in points}
+
+
+def test_merge_identical_commutes_soma_os_tamanhos():
+    pops_list = [
+        {"id": "p1", "size": 10, "residenceId": "a", "jobId": "b"},
+        {"id": "p2", "size": 5, "residenceId": "a", "jobId": "b"},
+        {"id": "p3", "size": 7, "residenceId": "a", "jobId": "c"},
+    ]
+    merged = pops.merge_identical_commutes(pops_list)
+    assert len(merged) == 2
+    assert {p["id"]: p["size"] for p in merged} == {"p1": 15, "p3": 7}
+
+
+def test_split_oversized_reparte_sem_perder_pessoas():
+    original = [{"id": "p1", "size": 1250, "residenceId": "a", "jobId": "b"}]
+    pieces = pops.split_oversized(original, 500)
+    assert len(pieces) == 3
+    assert sum(p["size"] for p in pieces) == 1250
+    assert all(p["size"] <= 500 for p in pieces)
+    assert len({p["id"] for p in pieces}) == 3
+
+
+def test_split_oversized_respeita_limite_desligado():
+    original = [{"id": "p1", "size": 9999, "residenceId": "a", "jobId": "b"}]
+    assert pops.split_oversized(original, 0) == original
+
+
+def test_generate_respeita_o_tamanho_maximo_de_pop(configure):
+    configure(pops, people_per_pop=100.0, min_pop_size=10, max_pop_size=250)
+    zones = make_zones(1)
+    _points, generated = build(
+        zones, {1: 20000.0}, {(1, 1): 20000.0}, {1: spread(1, 5)}, {1: spread(11, 5)}
+    )
+    assert max(p["size"] for p in generated) <= 250
+    assert sum(p["size"] for p in generated) == 20000
+    assert len({p["id"] for p in generated}) == len(generated), "ids duplicados após fatiar"
