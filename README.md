@@ -47,8 +47,11 @@ Os testes rodam sobre recortes minúsculos das fontes reais, no mesmo formato, s
 `generate` roda `sources` automaticamente se os dados ainda não estiverem em `data/sources`.
 
 Saídas em `out/`:
-- **`demand_data.json`** (+ `.gz`) — importável no depot (`DemandData`). Pops saem com `drivingSeconds/Distance = 0` para o depot rotear na importação.
+- **`demand_data.json`** (+ `.gz`) — importável no depot (`DemandData`).
+- **`config.json`** e **`description.md`** — exigidos na submissão ao Railyard (recorte, população, câmera inicial e a ficha do mapa).
 - **`pops_map.html`** — mapa dos pontos (raio ∝ tamanho, cor = balanço moradia×trabalho). Versão publicada: **https://www.rodrigoroque.dev/subway-builder-rmsp-demand-data/**
+
+Com `DEMAND_OSRM_URL` apontando para um servidor OSRM local, os pops já saem com `drivingSeconds`/`drivingDistance` preenchidos; sem ele os campos ficam em 0 e o depot roteia na importação. O `docstring` de `src/demand_data/routing.py` traz os comandos para subir o servidor.
 
 ## Configuração (`.env`)
 
@@ -64,5 +67,7 @@ src/demand_data/
   pops.py      # algoritmo de geração dos pops
   depot.py     # escreve demand_data.json (+ .gz)
   htmlmap.py   # mapa HTML (folium)
+  railyard.py  # config.json + description.md para a submissão
+  routing.py   # tempo/distância de carro via OSRM local
   cli.py
 ```

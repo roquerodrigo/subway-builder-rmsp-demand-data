@@ -39,6 +39,8 @@ def pipeline(monkeypatch):
         return _call
 
     monkeypatch.setattr(cli, "sources", SimpleNamespace(acquire=record("sources.acquire")))
+    monkeypatch.setattr(cli, "railyard", SimpleNamespace(write=record("railyard.write")))
+    monkeypatch.setattr(cli, "routing", SimpleNamespace(fill=record("routing.fill", 0)))
     monkeypatch.setattr(cli, "od", SimpleNamespace(
         load_zones=record("od.load_zones", zones),
         extract_od=record("od.extract_od", survey),
@@ -186,3 +188,23 @@ def test_regressao_generate_para_quando_sources_nao_produz_as_entradas(
     assert result.exit_code == 1
     assert "faltam dados mesmo após `sources`" in result.output
     assert "od.load_zones" not in pipeline.calls
+
+
+def test_generate_roteia_quando_ha_servidor_osrm(runner, pipeline, settings, configure):
+    configure(cli, sources_dir=settings.sources_dir, out_dir=settings.out_dir,
+              osrm_url="http://127.0.0.1:5000")
+    create_inputs(settings)
+    result = runner.invoke(cli.app, ["generate"])
+
+    assert result.exit_code == 0
+    assert pipeline.calls["routing.fill"][0][0] == (
+        pipeline.points, pipeline.poplist, "http://127.0.0.1:5000"
+    )
+
+
+def test_generate_avisa_quando_nao_ha_osrm(runner, pipeline, settings):
+    create_inputs(settings)
+    result = runner.invoke(cli.app, ["generate"])
+
+    assert "sem DEMAND_OSRM_URL" in result.output
+    assert "routing.fill" not in pipeline.calls

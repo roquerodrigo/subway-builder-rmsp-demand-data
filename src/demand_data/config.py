@@ -44,6 +44,14 @@ class Settings:
     # pessoas (moradores ou trabalhadores) por ponto: define quantos pontos a zona recebe.
     people_per_point: float = _env_float("DEMAND_PEOPLE_PER_POINT", 1000.0)
     seed: int = _env_int("DEMAND_SEED", 42)
+
+    # identificação do mapa nos arquivos de submissão ao Railyard
+    map_code: str = _env("DEMAND_MAP_CODE", "RMSP")
+    map_name: str = _env("DEMAND_MAP_NAME", "Região Metropolitana de São Paulo")
+    map_creator: str = _env("DEMAND_MAP_CREATOR", "")
+    map_version: str = _env("DEMAND_MAP_VERSION", "1.1.0")
+    # servidor OSRM local para tempo/distância de carro (vazio = deixa o depot rotear)
+    osrm_url: str = _env("DEMAND_OSRM_URL", "")
     # destinos de trabalho por zona de origem (0 = todos). Não altera o total de pops.
     dest_cap: int = _env_int("DEMAND_DEST_CAP", 0)
     # tamanho mínimo de pop: limita nº de pops da zona a P/min_pop_size, fundindo os pops

@@ -6,7 +6,7 @@ import logging
 
 import typer
 
-from demand_data import density, depot, htmlmap, od, pops, sources
+from demand_data import density, depot, htmlmap, od, pops, railyard, routing, sources
 from demand_data.config import settings
 
 app = typer.Typer(add_completion=False, help="Gera pops de demanda da Pesquisa OD 2023 -> depot.")
@@ -50,7 +50,14 @@ def generate() -> None:
 
     points, poplist = pops.generate(zones, survey, home_cands, work_cands)
 
+    if settings.osrm_url:
+        routing.fill(points, poplist, settings.osrm_url)
+    else:
+        typer.echo("sem DEMAND_OSRM_URL — o depot calcula as rotas na importação")
+
     depot.write(points, poplist, settings.demand_json)
+    railyard.write(points, poplist, settings.out_dir, settings.bbox, settings.map_name,
+                   settings.map_code, settings.map_creator, settings.map_version)
     b = settings.bbox
     htmlmap.write(points, ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2), settings.map_html,
                   zones=zones)
