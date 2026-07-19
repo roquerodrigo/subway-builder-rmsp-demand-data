@@ -39,7 +39,7 @@ def generate() -> None:
 
     weights = density.setor_weights(settings.cnefe_csv, settings.setor_pop_csv)
     home_cands, work_cands = density.zone_candidates(
-        settings.cnefe_csv, settings.zones_shp, weights
+        settings.cnefe_csv, settings.zones_shp, weights, od.demand_by_zone(pop, odm)
     )
 
     points, poplist = pops.generate(zones, pop, odm, home_cands, work_cands)

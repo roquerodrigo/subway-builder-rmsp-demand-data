@@ -95,3 +95,20 @@ def extract_od(
         sum(pop.values()), len(pop), len(od), sum(od.values()),
     )
     return dict(pop), dict(od)
+
+
+def demand_by_zone(
+    pop: dict[int, float], od: dict[tuple[int, int], float]
+) -> dict[int, tuple[float, float]]:
+    """{zona: (moradores, trabalhadores)} na mesma escala.
+
+    A matriz O-D só cobre quem declarou local de trabalho (metade da população), mas todo pop
+    recebe um ``jobId``; os empregos são reescalados para a população total para que os dois
+    lados da demanda sejam comparáveis.
+    """
+    jobs: dict[int, float] = collections.defaultdict(float)
+    for (_h, w), f in od.items():
+        jobs[w] += f
+    total_jobs = sum(jobs.values())
+    scale = sum(pop.values()) / total_jobs if total_jobs > 0 else 1.0
+    return {z: (pop.get(z, 0.0), jobs.get(z, 0.0) * scale) for z in pop.keys() | jobs.keys()}

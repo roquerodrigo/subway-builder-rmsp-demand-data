@@ -3,8 +3,13 @@
 A OD é só nível de zona; para posicionar pontos dentro da zona segundo a densidade de
 pessoas usamos a população por setor (Censo 2022) distribuída sobre os endereços
 residenciais do CNEFE (cada endereço pesa pop_do_setor / nº_endereços_do_setor). Os
-endereços são agregados numa grade (``density_cell``) por zona; cada célula não vazia vira
-um ponto-candidato no seu centroide ponderado, com peso = atividade ali.
+endereços são agregados numa grade por zona; cada célula não vazia vira um ponto-candidato
+no seu centroide ponderado, com peso = atividade ali.
+
+A grade é adaptativa: a agregação roda em ``base_cell`` e cada zona funde as células de volta
+até ``density_cell``, parando antes se a demanda por ponto passar de ``max_demand_per_point``.
+Assim as zonas centrais, que concentram muito emprego em pouca área, ganham resolução sem
+inflar o resto da RMSP.
 """
 
 from __future__ import annotations
@@ -62,7 +67,7 @@ def setor_weights(cnefe: Path, setor_pop_csv: Path) -> dict[str, float]:
 
 
 def _cell(lng: float, lat: float) -> tuple[int, int]:
-    cs = settings.density_cell
+    cs = settings.base_cell
     b = settings.bbox
     return (int((lng - b[0]) / cs), int((lat - b[1]) / cs))
 
@@ -190,22 +195,78 @@ def _parallel_aggregate(worker, path: Path, zones_shp: Path, *extra):
     return acc
 
 
-def _cells_by_zone(acc) -> dict[int, list[tuple[float, float, float, float]]]:
-    """{zona: [(rw, jw, lng, lat), ...]} — uma célula por (zona, cell), no centroide ponderado."""
-    out: dict[int, list[tuple[float, float, float, float]]] = defaultdict(list)
-    for (zone, _c), (rw, jw, cl, ct, w) in acc.items():
-        if w > 0:
-            out[zone].append((rw, jw, round(cl / w, 6), round(ct / w, 6)))
+ZoneCells = dict[tuple[int, int], list[float]]  # célula da grade fina -> [rw, jw, wlng, wlat, w]
+
+
+def _cells_by_zone(acc) -> dict[int, ZoneCells]:
+    """{zona: {célula: [rw, jw, w*lng, w*lat, w]}} na grade fina."""
+    out: dict[int, ZoneCells] = defaultdict(dict)
+    for (zone, cell), vals in acc.items():
+        if vals[4] > 0:
+            out[zone][cell] = list(vals)
     return out
 
 
+def _coarsen(cells: ZoneCells, factor: int) -> ZoneCells:
+    """Funde a grade fina em células ``factor`` vezes maiores (alinhadas à grade global)."""
+    if factor <= 1:
+        return cells
+    out: ZoneCells = {}
+    for (cx, cy), vals in cells.items():
+        key = (cx // factor, cy // factor)
+        acc = out.get(key)
+        if acc is None:
+            out[key] = list(vals)
+        else:
+            for i in range(5):
+                acc[i] += vals[i]
+    return out
+
+
+def _resolve(cells: ZoneCells, target: int) -> tuple[ZoneCells, int]:
+    """Grade mais grossa (múltiplo da fina) que ainda dê ``target`` células na zona."""
+    factor = max(1, settings.density_subdiv)
+    while factor > 1:
+        merged = _coarsen(cells, factor)
+        if len(merged) >= target:
+            return merged, factor
+        factor //= 2
+    return cells, 1
+
+
+def _work_count(cells: list[tuple[float, float, float, float]], res: float, job: float) -> int:
+    """Quantas células da zona vão para trabalho: ∝ à demanda (moradores × trabalhadores),
+    limitado pelas células que têm atividade daquele tipo.
+
+    A vocação célula a célula (jw/Σjw vs rw/Σrw) reparte bem entre células equivalentes, mas
+    ignora o VOLUME: uma zona de escritórios com poucos moradores gastava metade das células
+    escassas com moradia.
+    """
+    n = len(cells)
+    job_capable = sum(1 for c in cells if c[1] > 0)
+    res_capable = sum(1 for c in cells if c[0] > 0)
+    total = res + job
+    if total <= 0:
+        return sum(1 for c in cells if c[1] > c[0])
+    k = round(n * job / total)
+    k = max(n - res_capable, min(k, job_capable))
+    if job > 0 and job_capable > 0:
+        k = max(k, 1)
+    if res > 0 and res_capable > 0:
+        k = min(k, n - 1)
+    return max(0, min(k, n))
+
+
 def zone_candidates(
-    cnefe: Path, zones_shp: Path, weights: dict[str, float]
+    cnefe: Path, zones_shp: Path, weights: dict[str, float], demand: dict[int, tuple[float, float]]
 ) -> tuple[Candidates, Candidates]:
     """(casa, trabalho): pipeline ÚNICA de células dividida por vocação.
 
-    Cada célula vira UM ponto no centroide ponderado — casa se relativamente mais
-    residencial, trabalho se mais de emprego (jw/Σjw vs rw/Σrw da zona); tipos disjuntos.
+    Cada célula vira UM ponto no centroide ponderado. A resolução é por zona: a grade mais
+    grossa que ainda dê um ponto a cada ``max_demand_per_point`` pessoas de ``demand``
+    ``{zona: (moradores, trabalhadores)}``, para que as zonas de demanda concentrada não
+    fiquem com poucos pontos gigantes. As células vão para trabalho ou casa ∝ à demanda da
+    zona, as de vocação mais forte primeiro; tipos disjuntos.
     Densidade híbrida: lotes do GeoSampa nas zonas da capital bem cobertas por ``lotes.csv``,
     CNEFE no resto da RMSP.
     """
@@ -229,17 +290,31 @@ def zone_candidates(
 
     home_out: dict[int, list[tuple[float, float, float]]] = defaultdict(list)
     work_out: dict[int, list[tuple[float, float, float]]] = defaultdict(list)
-    for zone, cells in by_zone.items():
+    cap = settings.max_demand_per_point
+    refined = 0
+    for zone in sorted(by_zone):
+        res, job = demand.get(zone, (0.0, 0.0))
+        target = max(1, -(-int(res + job) // int(cap))) if cap > 0 else 1
+        cells_map, factor = _resolve(by_zone[zone], target)
+        if factor < settings.density_subdiv:
+            refined += 1
+
+        cells = [
+            (v[0], v[1], round(v[2] / v[4], 6), round(v[3] / v[4], 6))
+            for _k, v in sorted(cells_map.items())
+        ]
         zres = sum(c[0] for c in cells) or 1.0
         zjob = sum(c[1] for c in cells) or 1.0
-        for rw, jw, lng, lat in cells:
-            if jw / zjob > rw / zres:  # relativamente mais emprego → trabalho
-                work_out[zone].append((lng, lat, jw))
-            else:
-                home_out[zone].append((lng, lat, rw))
+        ranked = sorted(cells, key=lambda c: (c[1] / zjob - c[0] / zres, c[2], c[3]), reverse=True)
+        k = _work_count(ranked, res, job)
+        for _rw, jw, lng, lat in ranked[:k]:
+            work_out[zone].append((lng, lat, jw))
+        for rw, _jw, lng, lat in ranked[k:]:
+            home_out[zone].append((lng, lat, rw))
+
     log.info(
-        "pipeline única: %d células -> %d casa / %d trabalho",
-        sum(len(c) for c in by_zone.values()),
+        "células: %d casa / %d trabalho em %d zonas (%d zonas refinadas abaixo de %.0f m)",
         sum(len(v) for v in home_out.values()), sum(len(v) for v in work_out.values()),
+        len(by_zone), refined, settings.density_cell * settings.m_per_deg_lat,
     )
     return dict(home_out), dict(work_out)

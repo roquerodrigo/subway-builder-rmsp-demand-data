@@ -5,7 +5,7 @@ de casa e de trabalho (disjuntas por vocação):
   1. o nº de pops por zona é ∝ ÁREA (total = Σ round(pop / people_per_pop));
   2. a casa é amostrada entre as células de casa da zona ∝ população;
   3. o trabalho é sorteado pela matriz O-D e amostrado entre as células de trabalho da zona
-     de destino ∝ densidade de emprego.
+     de destino ∝ densidade de emprego, numa alocação única por zona de destino.
 
 Como casa e trabalho vêm de células disjuntas, os pontos nunca coincidem; cada ponto tem
 um tipo só (casa = ``residents``, trabalho = ``jobs``). Saída ``(points, pops)`` no schema
@@ -55,7 +55,12 @@ def _probs(cands: dict[int, list[tuple[float, float, float]]]) -> dict[int, np.n
 
 def _alloc(probs: np.ndarray, n: int, rng) -> np.ndarray:
     """Distribui ``n`` pops entre as células de forma DETERMINÍSTICA (round(n·p) por célula),
-    depois embaralha para descorrelacionar do destino. Retorna o índice de célula por pop."""
+    depois embaralha para descorrelacionar do destino. Retorna o índice de célula por pop.
+
+    Só é fiel a ``probs`` com ``n`` grande: em ``n`` pequeno o arredondamento sempre premia
+    as células de maior peso, então cada chamada precisa cobrir TODOS os pops daquela fonte
+    de células de uma vez (ver :func:`generate`), nunca um par origem-destino por vez.
+    """
     counts = _largest_remainder(probs, n)
     idx = np.repeat(np.arange(len(probs)), counts)
     rng.shuffle(idx)
@@ -114,6 +119,11 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
 
     pops: list[dict] = []
     seq = 0
+    # A célula de trabalho fica pendente e é sorteada só depois, uma vez por fonte de células:
+    # a maioria dos pares origem-destino manda 1 ou 2 pops, e alocar par a par empilharia
+    # todos eles na célula de maior peso da zona de destino.
+    pending: dict[tuple[int, str], list[int]] = defaultdict(list)
+    work_cells: dict[tuple[int, str], tuple[list, np.ndarray]] = {}
     for zone in elig:
         n = n_by_zone[zone]
         if n <= 0:
@@ -142,18 +152,26 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
                 k += c
                 continue
             wc, wp, wpre, wzz = ws
-            w_idx = _alloc(wp, c, rng)
-            for i in range(c):
+            key = (wzz, wpre)
+            work_cells[key] = (wc, wp)
+            for _ in range(c):
                 sz = int(sizes[k])
                 hi = int(h_idx[k])
                 k += 1
                 if sz <= 0:
                     continue
                 rid = point(hpre, hz, hi, hc)
-                jid = point(wpre, wzz, int(w_idx[i]), wc)
                 seq += 1
                 pops.append({"id": f"p{seq:06d}", "size": sz, "residenceId": rid,
-                             "jobId": jid, "drivingSeconds": 0, "drivingDistance": 0})
+                             "jobId": "", "drivingSeconds": 0, "drivingDistance": 0})
+                pending[key].append(len(pops) - 1)
+
+    for key in sorted(pending):
+        wzz, wpre = key
+        wc, wp = work_cells[key]
+        idxs = pending[key]
+        for i, cell in zip(idxs, _alloc(wp, len(idxs), rng), strict=True):
+            pops[i]["jobId"] = point(wpre, wzz, int(cell), wc)
 
     _aggregate(points, pops)
     res_pts = sum(1 for p in points.values() if p["residents"] > 0)

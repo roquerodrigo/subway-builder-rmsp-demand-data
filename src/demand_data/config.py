@@ -39,6 +39,13 @@ class Settings:
     people_per_pop: float = _env_float("DEMAND_PEOPLE_PER_POP", 300.0)
     # grade (graus) de agregação da densidade em células (~500 m a -23.5°). Menor = mais pontos.
     density_cell: float = _env_float("DEMAND_DENSITY_CELL", 0.0045)
+    # a agregação roda numa grade density_cell/density_subdiv e cada zona funde as células de
+    # volta até a grade mais grossa que ainda respeite max_demand_per_point — só as zonas de
+    # demanda concentrada ficam finas. Potência de 2.
+    density_subdiv: int = _env_int("DEMAND_DENSITY_SUBDIV", 4)
+    # teto de pessoas (moradores + trabalhadores) por ponto: define quantas células a zona
+    # precisa. 0 = sem refino (grade fixa em density_cell).
+    max_demand_per_point: float = _env_float("DEMAND_MAX_PER_POINT", 5000.0)
     seed: int = _env_int("DEMAND_SEED", 42)
     # destinos de trabalho por zona de origem (0 = todos). Não altera o total de pops.
     dest_cap: int = _env_int("DEMAND_DEST_CAP", 0)
@@ -100,6 +107,11 @@ class Settings:
     bbox: tuple[float, float, float, float] = field(
         default_factory=lambda: (-47.22, -24.08, -45.68, -23.17)
     )
+
+    @property
+    def base_cell(self) -> float:
+        """Grade fina da agregação; as zonas fundem múltiplos dela até density_cell."""
+        return self.density_cell / max(1, self.density_subdiv)
 
     @property
     def od_dir(self) -> Path:

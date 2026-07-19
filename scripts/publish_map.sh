@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publishes out/pops_map.html to GitHub Pages (orphan gh-pages branch).
+# Publishes out/pops_map.html to GitHub Pages as a single-commit gh-pages branch.
 set -euo pipefail
 
 BRANCH="gh-pages"
@@ -13,26 +13,18 @@ if [[ ! -f "$MAP" ]]; then
     exit 1
 fi
 
-staging="$(mktemp -d)/$BRANCH"
-cleanup() {
-    git worktree remove --force "$staging" >/dev/null 2>&1 || true
-    rm -rf "$(dirname "$staging")"
-}
-trap cleanup EXIT
+# Builds the commit through a scratch index so no branch, worktree or checkout is touched.
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+export GIT_INDEX_FILE="$scratch/index"
 
-git worktree add --detach --no-checkout "$staging" >/dev/null
-(
-    cd "$staging"
-    git checkout --orphan "$BRANCH" >/dev/null 2>&1
-    git rm -rfq --ignore-unmatch . >/dev/null
+map_blob="$(git hash-object -w "$MAP")"
+nojekyll_blob="$(git hash-object -w --stdin </dev/null)"
+git update-index --add --cacheinfo "100644,$map_blob,index.html"
+git update-index --add --cacheinfo "100644,$nojekyll_blob,.nojekyll"
 
-    cp "$repo_root/$MAP" index.html
-    touch .nojekyll
-
-    git add -A
-    git commit -qm "Publish demand map"
-    git push -fq origin "HEAD:refs/heads/$BRANCH"
-)
+commit="$(git commit-tree "$(git write-tree)" -m "Publish demand map")"
+git push -fq origin "$commit:refs/heads/$BRANCH"
 
 remote_url="$(git remote get-url origin)"
 slug="${remote_url#*github.com[:/]}"
