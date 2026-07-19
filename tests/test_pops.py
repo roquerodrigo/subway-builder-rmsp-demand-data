@@ -11,7 +11,7 @@ from shapely.geometry import Polygon
 from tests.conftest import BASE_LAT, BASE_LNG
 
 from demand_data import pops
-from demand_data.od import Zones
+from demand_data.od import ACTIVITIES, Survey, Zones
 
 POINT_ID = re.compile(r"^z(\d+)(hf|wf|h|w)(\d+)$")
 
@@ -123,8 +123,17 @@ def test_plan_destinations_sem_pessoas():
     assert pops._plan_destinations([(1, 1.0)], 0, 10) == []
 
 
-def build(zones, pop, od, home_cands, work_cands):
-    return pops.generate(zones, pop, od, home_cands, work_cands)
+def make_survey(pop, od, activity=None, external=None):
+    """Survey em que todos são trabalhadores e a matriz de trabalho é ``od``."""
+    if activity is None:
+        activity = {z: {"work": v, "school": 0.0, "other": 0.0} for z, v in pop.items()}
+    flows = {"work": dict(od), "school": {}, "other": {}}
+    return Survey(dict(pop), activity, flows, external or {a: {} for a in ACTIVITIES})
+
+
+def build(zones, pop, od, home_cands, work_cands, activity=None, external=None):
+    survey = make_survey(pop, od, activity, external)
+    return pops.generate(zones, survey, home_cands, work_cands)
 
 
 def test_generate_preserva_a_populacao(configure):
@@ -383,3 +392,76 @@ def test_generate_respeita_o_tamanho_maximo_de_pop(configure):
     assert max(p["size"] for p in generated) <= 250
     assert sum(p["size"] for p in generated) == 20000
     assert len({p["id"] for p in generated}) == len(generated), "ids duplicados após fatiar"
+
+
+def test_generate_manda_cada_atividade_para_a_sua_matriz(configure):
+    """Trabalhadores, estudantes e o resto seguem matrizes distintas da pesquisa."""
+    configure(pops, people_per_pop=100.0, min_pop_size=10)
+    zones = make_zones(1, 2, 3, 4)
+    survey = Survey(
+        population={1: 3000.0},
+        activity={1: {"work": 1000.0, "school": 1000.0, "other": 1000.0}},
+        flows={"work": {(1, 2): 1.0}, "school": {(1, 3): 1.0}, "other": {(1, 4): 1.0}},
+        external={a: {} for a in ACTIVITIES},
+    )
+    points, generated = pops.generate(
+        zones, survey,
+        {1: spread(1, 8)},
+        {z: spread(z + 10, 8) for z in (2, 3, 4)},
+    )
+    arrived = collections.Counter()
+    for p in generated:
+        arrived[zone_of(p["jobId"])] += p["size"]
+    assert set(arrived) == {2, 3, 4}
+    for zone in (2, 3, 4):
+        assert arrived[zone] == pytest.approx(1000, abs=60)
+    assert sum(p["residents"] for p in points) == 3000
+
+
+def test_generate_cria_portal_para_destino_fora_das_zonas(configure):
+    configure(pops, people_per_pop=100.0, min_pop_size=10)
+    zones = make_zones(1)
+    survey = Survey(
+        population={1: 2000.0},
+        activity={1: {"work": 2000.0, "school": 0.0, "other": 0.0}},
+        flows={"work": {(1, 1): 1.0}, "school": {}, "other": {}},
+        external={"work": {1: 1000.0}, "school": {}, "other": {}},
+    )
+    points, generated = pops.generate(zones, survey, {1: spread(1, 6)}, {1: spread(11, 6)})
+    gateways = [p for p in points if p["id"].startswith("EXT_")]
+    assert len(gateways) == 1, "os portais são agregados numa grade grossa"
+    assert gateways[0]["jobs"] == pytest.approx(1000, abs=60)
+    assert sum(p["size"] for p in generated) == 2000
+
+
+def test_portal_fica_na_borda_do_recorte(configure):
+    configure(pops, people_per_pop=100.0, min_pop_size=10, bbox=(-47.0, -24.0, -45.0, -23.0))
+    zones = make_zones(1)
+    survey = Survey(
+        population={1: 1000.0},
+        activity={1: {"work": 1000.0, "school": 0.0, "other": 0.0}},
+        flows={"work": {}, "school": {}, "other": {}},
+        external={"work": {1: 1000.0}, "school": {}, "other": {}},
+    )
+    points, _generated = pops.generate(zones, survey, {1: spread(1, 4)}, {1: spread(11, 4)})
+    gateway = next(p for p in points if p["id"].startswith("EXT_"))
+    lng, lat = gateway["location"]
+    assert lng in (-47.0, -45.0) or lat in (-24.0, -23.0)
+
+
+def test_zona_ausente_do_shapefile_nao_gera_pops(configure):
+    """Sem geometria a zona não entra no rateio por área, então nem chega a criar portal."""
+    configure(pops, people_per_pop=100.0, min_pop_size=10)
+    zones = make_zones(1)
+    survey = Survey(
+        population={1: 1000.0, 9: 500.0},
+        activity={z: {"work": v, "school": 0.0, "other": 0.0}
+                  for z, v in ((1, 1000.0), (9, 500.0))},
+        flows={"work": {(1, 1): 1.0, (9, 1): 1.0}, "school": {}, "other": {}},
+        external={"work": {9: 500.0}, "school": {}, "other": {}},
+    )
+    points, generated = pops.generate(
+        zones, survey, {1: spread(1, 4), 9: spread(9, 4)}, {1: spread(11, 4)}
+    )
+    assert not [p for p in points if p["id"].startswith("EXT_")]
+    assert generated

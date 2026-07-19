@@ -41,15 +41,14 @@ def generate() -> None:
     settings.ensure_out()
 
     zones = od.load_zones(settings.zones_shp)
-    zset = set(zones.ids)
-    pop, odm = od.extract_od(settings.od_dbf, zset)
+    survey = od.extract_od(settings.od_dbf, set(zones.ids))
 
     weights = density.setor_weights(settings.cnefe_csv, settings.setor_pop_csv)
     home_cands, work_cands = density.zone_candidates(
-        settings.cnefe_csv, settings.zones_shp, weights, od.demand_by_zone(pop, odm)
+        settings.cnefe_csv, settings.zones_shp, weights, od.demand_by_zone(survey)
     )
 
-    points, poplist = pops.generate(zones, pop, odm, home_cands, work_cands)
+    points, poplist = pops.generate(zones, survey, home_cands, work_cands)
 
     depot.write(points, poplist, settings.demand_json)
     b = settings.bbox
@@ -62,8 +61,10 @@ def generate() -> None:
 def od_only() -> None:
     """Só a extração da OD (diagnóstico): população por zona + matriz."""
     zones = od.load_zones(settings.zones_shp)
-    pop, odm = od.extract_od(settings.od_dbf, set(zones.ids))
-    typer.echo(f"zonas={len(zones.ids)} pop_total={sum(pop.values()):.0f} od_pares={len(odm)}")
+    survey = od.extract_od(settings.od_dbf, set(zones.ids))
+    pairs = sum(len(f) for f in survey.flows.values())
+    typer.echo(f"zonas={len(zones.ids)} "
+               f"pop_total={sum(survey.population.values()):.0f} od_pares={pairs}")
 
 
 if __name__ == "__main__":

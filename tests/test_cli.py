@@ -24,6 +24,10 @@ def pipeline(monkeypatch):
     """
     calls: dict[str, list] = {}
     zones = SimpleNamespace(ids=[1, 2])
+    survey = SimpleNamespace(
+        population={1: 100.0, 2: 50.0},
+        flows={"work": {(1, 2): 30.0}, "school": {}, "other": {}},
+    )
     points = [{"id": "pop-1"}]
     poplist = [{"id": "pop-1", "residents": 10}]
 
@@ -37,7 +41,7 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(cli, "sources", SimpleNamespace(acquire=record("sources.acquire")))
     monkeypatch.setattr(cli, "od", SimpleNamespace(
         load_zones=record("od.load_zones", zones),
-        extract_od=record("od.extract_od", ({1: 100.0, 2: 50.0}, {(1, 2): 30.0})),
+        extract_od=record("od.extract_od", survey),
         demand_by_zone=record("od.demand_by_zone", {1: (100.0, 30.0)}),
     ))
     monkeypatch.setattr(cli, "density", SimpleNamespace(
@@ -49,7 +53,8 @@ def pipeline(monkeypatch):
     ))
     monkeypatch.setattr(cli, "depot", SimpleNamespace(write=record("depot.write")))
     monkeypatch.setattr(cli, "htmlmap", SimpleNamespace(write=record("htmlmap.write")))
-    return SimpleNamespace(calls=calls, zones=zones, points=points, poplist=poplist)
+    return SimpleNamespace(calls=calls, zones=zones, points=points, poplist=poplist,
+                           survey=survey)
 
 
 @pytest.fixture
@@ -123,7 +128,7 @@ def test_generate_encadeia_o_pipeline(runner, pipeline, settings):
         settings.cnefe_csv, settings.zones_shp, {"350000001": 1.0}, {1: (100.0, 30.0)}
     )
     assert pipeline.calls["pops.generate"][0][0] == (
-        pipeline.zones, {1: 100.0, 2: 50.0}, {(1, 2): 30.0}, {1: "casas"}, {1: "empregos"}
+        pipeline.zones, pipeline.survey, {1: "casas"}, {1: "empregos"}
     )
 
 

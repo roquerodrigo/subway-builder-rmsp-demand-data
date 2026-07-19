@@ -22,6 +22,7 @@ import numpy as np
 
 from demand_data.config import settings
 from demand_data.density import Candidates
+from demand_data.od import ACTIVITIES
 
 log = logging.getLogger(__name__)
 
@@ -85,17 +86,51 @@ def _plan_destinations(
     ]
 
 
-def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
-             home_cands: Candidates, work_cands: Candidates):
-    """Constrói (points, pops): casa dos pontos de casa, trabalho dos pontos de trabalho."""
-    rng = np.random.default_rng(settings.seed)
+def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
+    """Constrói (points, pops): casa dos pontos de casa, destino dos pontos de trabalho.
 
-    out_by_home: dict[int, list[tuple[int, float]]] = defaultdict(list)
-    for (h, w), f in od.items():
-        out_by_home[h].append((w, f))
+    Cada morador vai para o destino que declarou na pesquisa — trabalho, escola ou um motivo
+    não-pendular — em vez de todos disputarem a matriz de trabalho.
+    """
+    rng = np.random.default_rng(settings.seed)
+    pop = survey.population
+
+    out_by_home: dict[str, dict[int, list[tuple[int, float]]]] = {
+        name: defaultdict(list) for name in ACTIVITIES
+    }
+    for name in ACTIVITIES:
+        for (home, target), weight in survey.flows[name].items():
+            out_by_home[name][home].append((target, weight))
 
     points: dict[str, dict] = {}
     used: set[tuple[float, float]] = set()
+    centroids = {zid: (poly.centroid.x, poly.centroid.y)
+                 for zid, poly in zip(zones.ids, zones.polygons, strict=True)
+                 if not poly.is_empty}
+
+    def gateway(zone: int) -> str:
+        """Portal de saída da região para quem trabalha ou estuda fora das zonas da pesquisa.
+
+        A pesquisa não diz onde ficam essas zonas externas, só que estão fora; o portal é a
+        projeção do centroide da zona de origem na borda mais próxima do recorte. Só é
+        chamado para zonas que receberam pops, que por construção têm área e centroide.
+        """
+        lng, lat = centroids[zone]
+        min_lng, min_lat, max_lng, max_lat = settings.bbox
+        edges = (
+            ("W", (min_lng, lat), lng - min_lng),
+            ("E", (max_lng, lat), max_lng - lng),
+            ("S", (lng, min_lat), lat - min_lat),
+            ("N", (lng, max_lat), max_lat - lat),
+        )
+        side, (gx, gy), _distance = min(edges, key=lambda e: e[2])
+        # agrega os portais numa grade grossa, senão cada zona de origem criaria o seu
+        gx, gy = round(gx, 1), round(gy, 1)
+        pid = f"EXT_{side}{gx}_{gy}"
+        if pid not in points:
+            points[pid] = {"id": pid, "location": [gx, gy],
+                           "jobs": 0, "residents": 0, "popIds": []}
+        return pid
 
     def point(prefix: str, z: int, i: int, cands: list[tuple[float, float]]) -> str:
         pid = f"z{z}{prefix}{i}"
@@ -150,22 +185,48 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
         if settings.min_pop_size > 0:
             n = min(n, max(1, round(P / settings.min_pop_size)))
         hc, hpre, hz = home_src(zone)
+        target_size = max(1, P // n)
 
-        dests = sorted(out_by_home.get(zone, []), key=lambda x: x[1], reverse=True)
-        if settings.dest_cap > 0:
-            dests = dests[: settings.dest_cap]
-        dests = [(wz, f) for wz, f in dests if work_src(wz) is not None] or [(zone, 1.0)]
+        shares = survey.activity.get(zone, {})
+        by_activity = _largest_remainder([shares.get(name, 0.0) for name in ACTIVITIES], P)
 
-        plan = _plan_destinations(dests, P, max(1, P // n))
-        if not plan:
+        plans: list[tuple[str, int, int]] = []  # (destino, nº de pops, pessoas)
+        outside: list[tuple[str, int, int]] = []
+        for name, people in zip(ACTIVITIES, by_activity, strict=True):
+            if people <= 0:
+                continue
+            # a fração é medida contra o total da própria atividade: os pesos da matriz de
+            # motivos não-pendulares são viagens, não pessoas, e não seriam comparáveis
+            away = survey.external[name].get(zone, 0.0)
+            declared = shares.get(name, 0.0)
+            leaving = round(people * away / declared) if declared > 0 else 0
+            if leaving > 0:
+                outside.append(
+                    (gateway(zone), max(1, round(leaving / target_size)), leaving)
+                )
+                people -= leaving
+            if people <= 0:
+                continue
+
+            dests = sorted(out_by_home[name].get(zone, []), key=lambda x: x[1], reverse=True)
+            if settings.dest_cap > 0:
+                dests = dests[: settings.dest_cap]
+            dests = [(wz, f) for wz, f in dests if work_src(wz) is not None] or [(zone, 1.0)]
+            plans += [(str(wz), k, ppl) for wz, k, ppl in
+                      _plan_destinations(dests, people, target_size)]
+        plans += outside
+        if not plans:
             continue
 
-        h_idx = _alloc(len(hc), sum(k for _, k, _ in plan), rng)
+        h_idx = _alloc(len(hc), sum(k for _, k, _ in plans), rng)
         i = 0
-        for wz, k, people in plan:
-            wc, wpre, wzz = work_src(wz) or work_src(zone)
-            key = (wzz, wpre)
-            work_points[key] = wc
+        for target, k, people in plans:
+            if target.startswith("EXT_"):
+                key = None
+            else:
+                wc, wpre, wzz = work_src(int(target)) or work_src(zone)
+                key = (wzz, wpre)
+                work_points[key] = wc
             # k nunca passa de `people` (o tamanho-alvo é ≥ 1), então toda fatia sai positiva
             for sz in _largest_remainder(np.ones(k), people):
                 hi = int(h_idx[i])
@@ -173,8 +234,10 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
                 rid = point(hpre, hz, hi, hc)
                 seq += 1
                 pops.append({"id": f"p{seq:06d}", "size": int(sz), "residenceId": rid,
-                             "jobId": "", "drivingSeconds": 0, "drivingDistance": 0})
-                pending[key].append(len(pops) - 1)
+                             "jobId": target if key is None else "",
+                             "drivingSeconds": 0, "drivingDistance": 0})
+                if key is not None:
+                    pending[key].append(len(pops) - 1)
 
     for key in sorted(pending):
         wzz, wpre = key
