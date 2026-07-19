@@ -2,10 +2,11 @@
 
 Pipeline ÚNICA de células (:func:`demand_data.density.zone_candidates`) dividida em células
 de casa e de trabalho (disjuntas por vocação):
-  1. o nº de pops por zona é ∝ ÁREA (total = Σ round(pop / people_per_pop));
+  1. o TAMANHO do pop da zona vem de um orçamento ∝ ÁREA (Σ round(pop / people_per_pop));
   2. a casa é amostrada entre as células de casa da zona ∝ população;
-  3. o trabalho é sorteado pela matriz O-D e amostrado entre as células de trabalho da zona
-     de destino ∝ densidade de emprego, numa alocação única por zona de destino.
+  3. as pessoas da zona são repartidas entre os destinos ∝ matriz O-D e viram pops daquele
+     tamanho; a célula de trabalho sai das células de trabalho do destino ∝ densidade de
+     emprego, numa alocação única por zona de destino.
 
 Como casa e trabalho vêm de células disjuntas, os pontos nunca coincidem; cada ponto tem
 um tipo só (casa = ``residents``, trabalho = ``jobs``). Saída ``(points, pops)`` no schema
@@ -67,6 +68,32 @@ def _alloc(probs: np.ndarray, n: int, rng) -> np.ndarray:
     return idx
 
 
+def _plan_destinations(
+    dests: list[tuple[int, float]], people: int, target_size: int
+) -> list[tuple[int, int, int]]:
+    """[(zona de destino, nº de pops, pessoas)] repartindo as PESSOAS da zona ∝ matriz O-D.
+
+    Repartir o nº de POPS ∝ fluxo, como os pops de uma zona têm todos ~o mesmo tamanho,
+    arredondava o destino inteiro para cima ou para baixo: os de fluxo menor ficavam zerados
+    e as pessoas deles iam parar nos maiores. Aqui o fluxo decide quantas pessoas vão a cada
+    destino, e o nº de pops sai do tamanho de pop da zona.
+    """
+    share = _largest_remainder([f for _, f in dests], people)
+    kept = [(wz, ppl) for (wz, _f), ppl in zip(dests, share, strict=True) if ppl > 0]
+    floor = settings.min_pop_size
+    if floor > 0 and any(ppl >= floor for _, ppl in kept):
+        kept = [(wz, ppl) for wz, ppl in kept if ppl >= floor]
+    if not kept:
+        return []
+    # a cauda que não alcança o tamanho mínimo volta para quem ficou, nas mesmas proporções
+    final = _largest_remainder([ppl for _, ppl in kept], people)
+    return [
+        (wz, max(1, round(ppl / target_size)), int(ppl))
+        for (wz, _ppl), ppl in zip(kept, final, strict=True)
+        if ppl > 0
+    ]
+
+
 def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
              home_cands: dict[int, list[tuple[float, float, float]]],
              work_cands: dict[int, list[tuple[float, float, float]]]):
@@ -115,7 +142,7 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
             for zid, poly in zip(zones.ids, zones.polygons, strict=True)}
     n_by_zone = dict(zip(elig, _largest_remainder([area.get(z, 0.0) for z in elig], total),
                          strict=True))
-    log.info("contagem de pops ∝ área da zona (total=%d)", total)
+    log.info("tamanho de pop por zona ∝ área da zona (alvo=%d pops)", total)
 
     pops: list[dict] = []
     seq = 0
@@ -128,7 +155,7 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
         n = n_by_zone[zone]
         if n <= 0:
             continue
-        P = pop[zone]
+        P = round(pop[zone])
         # não subdivide a zona em mais pops do que ela comporta ao tamanho mínimo:
         # funde os pops minúsculos das zonas esparsas em menos pops maiores.
         if settings.min_pop_size > 0:
@@ -138,31 +165,26 @@ def generate(zones, pop: dict[int, float], od: dict[tuple[int, int], float],
         dests = sorted(out_by_home.get(zone, []), key=lambda x: x[1], reverse=True)
         if settings.dest_cap > 0:
             dests = dests[: settings.dest_cap]
-        dests = dests or [(zone, 1.0)]
-        counts = _largest_remainder([f for _, f in dests], n)
+        dests = [(wz, f) for wz, f in dests if work_src(wz) is not None] or [(zone, 1.0)]
 
-        h_idx = _alloc(hp, n, rng)
-        sizes = _largest_remainder(np.ones(n), round(P))
-        k = 0
-        for (wz, _f), c in zip(dests, counts, strict=True):
-            if c <= 0:
-                continue
-            ws = work_src(wz) or work_src(zone)
-            if ws is None:
-                k += c
-                continue
-            wc, wp, wpre, wzz = ws
+        plan = _plan_destinations(dests, P, max(1, P // n))
+        if not plan:
+            continue
+
+        h_idx = _alloc(hp, sum(k for _, k, _ in plan), rng)
+        i = 0
+        for wz, k, people in plan:
+            wc, wp, wpre, wzz = work_src(wz) or work_src(zone)
             key = (wzz, wpre)
             work_cells[key] = (wc, wp)
-            for _ in range(c):
-                sz = int(sizes[k])
-                hi = int(h_idx[k])
-                k += 1
+            for sz in _largest_remainder(np.ones(k), people):
+                hi = int(h_idx[i])
+                i += 1
                 if sz <= 0:
                     continue
                 rid = point(hpre, hz, hi, hc)
                 seq += 1
-                pops.append({"id": f"p{seq:06d}", "size": sz, "residenceId": rid,
+                pops.append({"id": f"p{seq:06d}", "size": int(sz), "residenceId": rid,
                              "jobId": "", "drivingSeconds": 0, "drivingDistance": 0})
                 pending[key].append(len(pops) - 1)
 
