@@ -155,14 +155,19 @@ class Settings:
         b = self.bbox
         return b[0] <= lng <= b[2] and b[1] <= lat <= b[3]
 
+    def missing_inputs(self) -> list[Path]:
+        """Arquivos processados que ``sources`` deveria ter deixado em data/sources."""
+        required = (
+            self.zones_shp.with_suffix(".shp"),
+            self.od_dbf,
+            self.cnefe_csv,
+            self.setor_pop_csv,
+        )
+        return [path for path in required if not path.exists()]
+
     def have_inputs(self) -> bool:
         """True se os arquivos processados já existem (não precisa rodar ``sources``)."""
-        return (
-            self.zones_shp.with_suffix(".shp").exists()
-            and self.od_dbf.exists()
-            and self.cnefe_csv.exists()
-            and self.setor_pop_csv.exists()
-        )
+        return not self.missing_inputs()
 
     def ensure_sources(self) -> None:
         self.sources_dir.mkdir(parents=True, exist_ok=True)

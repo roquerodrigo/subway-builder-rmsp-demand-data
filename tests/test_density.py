@@ -207,9 +207,10 @@ def test_line_offsets_cobre_o_arquivo_inteiro(tmp_path):
 
 def test_aggregate_chunk_soma_pesos_e_separa_vocacao(configure, cnefe_csv, zones_shp):
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     weights = {"350000001": 10.0, "350000002": 4.0}
     acc = density._aggregate_chunk(
-        str(cnefe_csv), 0, cnefe_csv.stat().st_size, str(zones_shp), weights
+        str(cnefe_csv), 0, cnefe_csv.stat().st_size, str(zones_shp), config, weights
     )
     zones_seen = {zone for zone, _cell in acc}
     assert zones_seen == {1, 2}
@@ -224,14 +225,16 @@ def test_aggregate_chunk_soma_pesos_e_separa_vocacao(configure, cnefe_csv, zones
 
 def test_aggregate_chunk_ignora_setor_sem_peso(configure, cnefe_csv, zones_shp):
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     acc = density._aggregate_chunk(
-        str(cnefe_csv), 0, cnefe_csv.stat().st_size, str(zones_shp), {}
+        str(cnefe_csv), 0, cnefe_csv.stat().st_size, str(zones_shp), config, {}
     )
     assert all(vals[density._HOME] == 0.0 for vals in acc.values())
 
 
 def test_aggregate_chunk_pula_linhas_invalidas(configure, zones_shp, tmp_path):
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     path = tmp_path / "ruim.csv"
     path.write_text(
         "sem virgulas\n"
@@ -241,44 +244,54 @@ def test_aggregate_chunk_pula_linhas_invalidas(configure, zones_shp, tmp_path):
         encoding="ascii",
     )
     acc = density._aggregate_chunk(
-        str(path), 0, path.stat().st_size, str(zones_shp), {"350000001": 2.0}
+        str(path), 0, path.stat().st_size, str(zones_shp), config, {"350000001": 2.0}
     )
     assert len(acc) == 1
 
 
 def test_aggregate_chunk_descarta_endereco_fora_das_zonas(configure, zones_shp, tmp_path):
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     path = tmp_path / "fora.csv"
     path.write_text(f"{BASE_LNG - 5},{BASE_LAT - 5},1,350000001\n", encoding="ascii")
     acc = density._aggregate_chunk(
-        str(path), 0, path.stat().st_size, str(zones_shp), {"350000001": 2.0}
+        str(path), 0, path.stat().st_size, str(zones_shp), config, {"350000001": 2.0}
     )
     assert acc == {}
 
 
 def test_lote_chunk_pesa_por_area_e_uso(configure, lotes_csv, zones_shp):
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
-    acc = density._lote_chunk(str(lotes_csv), 0, lotes_csv.stat().st_size, str(zones_shp))
+    config = density._chunk_config()
+    acc = density._lote_chunk(
+        str(lotes_csv), 0, lotes_csv.stat().st_size, str(zones_shp), config
+    )
     assert sum(v[density._HOME] for v in acc.values()) == pytest.approx(350.0)
     assert sum(v[density._WORK] for v in acc.values()) == pytest.approx(900.0)
 
 
 def test_lote_chunk_pula_linha_invalida(configure, zones_shp, tmp_path):
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     path = tmp_path / "lotes.csv"
     path.write_text(f"x,y,R,200\n{BASE_LNG + 0.001},{BASE_LAT + 0.001},R,200\n", encoding="ascii")
-    acc = density._lote_chunk(str(path), 0, path.stat().st_size, str(zones_shp))
+    acc = density._lote_chunk(str(path), 0, path.stat().st_size, str(zones_shp), config)
     assert len(acc) == 1
 
 
-def test_parallel_aggregate_combina_os_chunks(cnefe_csv, zones_shp):
-    """Sem `configure`: os workers são outros processos e releem a configuração do módulo."""
+def test_regressao_parallel_aggregate_leva_a_configuracao_aos_workers(
+    configure, cnefe_csv, zones_shp
+):
+    """Os workers são outros processos: se lessem o módulo por conta própria, usariam o .env
+    do disco e agregariam numa grade diferente da do processo principal."""
+    configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     weights = {"350000001": 10.0, "350000002": 4.0}
     combined = density._parallel_aggregate(
         density._aggregate_chunk, cnefe_csv, zones_shp, weights
     )
     single = density._aggregate_chunk(
-        str(cnefe_csv), 0, cnefe_csv.stat().st_size, str(zones_shp), weights
+        str(cnefe_csv), 0, cnefe_csv.stat().st_size, str(zones_shp), config, weights
     )
     assert set(combined) == set(single)
     for key, vals in single.items():
@@ -333,26 +346,30 @@ def test_res_count_ignora_linhas_ilegiveis(tmp_path):
 def test_aggregate_chunk_para_no_fim_do_arquivo(configure, cnefe_csv, zones_shp):
     """O intervalo pedido pode passar do fim do arquivo quando o último chunk é curto."""
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     acc = density._aggregate_chunk(
-        str(cnefe_csv), 0, cnefe_csv.stat().st_size * 10, str(zones_shp), {"350000001": 1.0}
+        str(cnefe_csv), 0, cnefe_csv.stat().st_size * 10, str(zones_shp), config,
+        {"350000001": 1.0},
     )
     assert acc
 
 
 def test_lote_chunk_pula_linha_com_menos_campos(configure, zones_shp, tmp_path):
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     path = tmp_path / "lotes.csv"
     path.write_text(
         f"{BASE_LNG},{BASE_LAT},R\n"
         f"{BASE_LNG + 0.001},{BASE_LAT + 0.001},R,200\n",
         encoding="ascii",
     )
-    acc = density._lote_chunk(str(path), 0, path.stat().st_size * 10, str(zones_shp))
+    acc = density._lote_chunk(str(path), 0, path.stat().st_size * 10, str(zones_shp), config)
     assert len(acc) == 1
 
 
 def test_lote_chunk_descarta_lote_fora_das_zonas(configure, zones_shp, tmp_path):
     configure(density, density_cell=0.01, bbox=(-47.0, -24.0, -45.0, -23.0))
+    config = density._chunk_config()
     path = tmp_path / "lotes.csv"
     path.write_text(f"{BASE_LNG - 5},{BASE_LAT - 5},R,200\n", encoding="ascii")
-    assert density._lote_chunk(str(path), 0, path.stat().st_size, str(zones_shp)) == {}
+    assert density._lote_chunk(str(path), 0, path.stat().st_size, str(zones_shp), config) == {}

@@ -73,7 +73,18 @@ def test_sources_baixa_as_fontes(runner, pipeline, settings):
     assert len(pipeline.calls["sources.acquire"]) == 1
 
 
-def test_generate_roda_sources_quando_faltam_as_entradas(runner, pipeline, settings):
+def sources_that_produce(settings, pipeline):
+    """Dublê de ``acquire`` que de fato deixa as entradas prontas, como a aquisição real."""
+
+    def _acquire(*args, **kwargs):
+        pipeline.calls.setdefault("sources.acquire", []).append((args, kwargs))
+        create_inputs(settings)
+
+    return SimpleNamespace(acquire=_acquire)
+
+
+def test_generate_roda_sources_quando_faltam_as_entradas(runner, pipeline, settings, monkeypatch):
+    monkeypatch.setattr(cli, "sources", sources_that_produce(settings, pipeline))
     result = runner.invoke(cli.app, ["generate"])
 
     assert result.exit_code == 0
@@ -91,6 +102,7 @@ def test_generate_pula_sources_quando_as_entradas_existem(runner, pipeline, sett
 
 
 def test_generate_cria_o_diretorio_de_saida(runner, pipeline, settings):
+    create_inputs(settings)
     result = runner.invoke(cli.app, ["generate"])
 
     assert result.exit_code == 0
@@ -98,6 +110,7 @@ def test_generate_cria_o_diretorio_de_saida(runner, pipeline, settings):
 
 
 def test_generate_encadeia_o_pipeline(runner, pipeline, settings):
+    create_inputs(settings)
     result = runner.invoke(cli.app, ["generate"])
 
     assert result.exit_code == 0
@@ -115,6 +128,7 @@ def test_generate_encadeia_o_pipeline(runner, pipeline, settings):
 
 
 def test_generate_grava_depot_e_mapa(runner, pipeline, settings):
+    create_inputs(settings)
     result = runner.invoke(cli.app, ["generate"])
 
     assert result.exit_code == 0
@@ -155,3 +169,15 @@ def test_sem_verbose_o_log_fica_em_info(runner, pipeline, settings, monkeypatch)
 
     assert runner.invoke(cli.app, ["sources"]).exit_code == 0
     assert niveis == [logging.INFO]
+
+
+def test_regressao_generate_para_quando_sources_nao_produz_as_entradas(
+    runner, pipeline, settings
+):
+    """Sem revalidar, uma aquisição incompleta seguia adiante e quebrava lá na frente com um
+    erro de arquivo ausente no meio do processamento."""
+    result = runner.invoke(cli.app, ["generate"])
+
+    assert result.exit_code == 1
+    assert "faltam dados mesmo após `sources`" in result.output
+    assert "od.load_zones" not in pipeline.calls

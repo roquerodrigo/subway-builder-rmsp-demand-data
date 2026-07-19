@@ -72,9 +72,24 @@ def setor_weights(cnefe: Path, setor_pop_csv: Path) -> dict[str, float]:
     return weights
 
 
-def _cell(lng: float, lat: float) -> tuple[int, int]:
-    cs = settings.density_cell
-    b = settings.bbox
+def _chunk_config() -> dict:
+    """Configuração dos workers em tipos primitivos.
+
+    Mandar o objeto de configuração exigiria que a classe fosse a mesma nos dois processos,
+    o que deixa de valer assim que o módulo é recarregado.
+    """
+    return {
+        "cell": settings.density_cell,
+        "bbox": settings.bbox,
+        "res_especies": settings.cnefe_res_especies,
+        "job_especies": settings.cnefe_job_especies,
+        "job_weights": settings.cnefe_job_especie_weight,
+    }
+
+
+def _cell(lng: float, lat: float, config: dict | None = None) -> tuple[int, int]:
+    cs = config["cell"] if config else settings.density_cell
+    b = config["bbox"] if config else settings.bbox
     return (int((lng - b[0]) / cs), int((lat - b[1]) / cs))
 
 
@@ -124,15 +139,15 @@ def _line_offsets(path: Path, n: int) -> list[tuple[int, int]]:
 
 
 def _aggregate_chunk(
-    cnefe: str, start: int, end: int, zones_shp: str, weights: dict[str, float]
+    cnefe: str, start: int, end: int, zones_shp: str, config: dict, weights: dict[str, float]
 ) -> dict[tuple[int, tuple[int, int]], list[float]]:
     """Agrega um intervalo do CNEFE em {(zona, célula): [rw, jw, w*lng, w*lat, w, d², lng, lat]}:
     peso residencial (rw = pop do setor) e de emprego (jw = espécie), o centroide ponderado e o
     endereço real mais central da célula."""
     zones = load_zones(Path(zones_shp))
-    res = settings.cnefe_res_especies
-    job = settings.cnefe_job_especies
-    job_w = settings.cnefe_job_especie_weight
+    res = config["res_especies"]
+    job = config["job_especies"]
+    job_w = config["job_weights"]
     acc: dict[tuple[int, tuple[int, int]], list[float]] = {}
     with open(cnefe, "rb") as f:
         f.seek(start)
@@ -160,7 +175,7 @@ def _aggregate_chunk(
             zone = zones.zone_of(lng, lat)
             if zone is None:
                 continue
-            cell = _cell(lng, lat)
+            cell = _cell(lng, lat, config)
             key = (zone, cell)
             e = acc.get(key)
             if e is None:
@@ -175,7 +190,7 @@ def _aggregate_chunk(
 
 
 def _lote_chunk(
-    lotes: str, start: int, end: int, zones_shp: str
+    lotes: str, start: int, end: int, zones_shp: str, config: dict
 ) -> dict[tuple[int, tuple[int, int]], list[float]]:
     """Agrega um intervalo de ``lotes.csv`` (lng,lat,uso,area) em {(zona, célula): [...]} —
     rw = área construída residencial (R), jw = não-residencial (N). Densidade por área."""
@@ -199,7 +214,7 @@ def _lote_chunk(
                 continue
             rw = area if parts[2] == b"R" else 0.0
             jw = area if parts[2] == b"N" else 0.0
-            cell = _cell(lng, lat)
+            cell = _cell(lng, lat, config)
             key = (zone, cell)
             e = acc.get(key)
             if e is None:
@@ -215,14 +230,22 @@ def _lote_chunk(
 
 def _parallel_aggregate(worker, path: Path, zones_shp: Path, *extra):
     """Roda ``worker`` em paralelo sobre intervalos de bytes de ``path``, somando os
-    acumuladores {(zona, célula): [rw, jw, w*lng, w*lat, w]}."""
+    acumuladores por (zona, célula).
+
+    A configuração vai explícita para os workers: eles são outros processos e, se lessem o
+    módulo por conta própria, usariam o ``.env`` do disco em vez do que o processo principal
+    tem em mãos — grades diferentes de um lado e do outro, silenciosamente.
+    """
     n = max(1, (os.cpu_count() or 2) - 1)
     ranges = _line_offsets(path, n)
     acc: dict[tuple[int, tuple[int, int]], list[float]] = defaultdict(
         lambda: [0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0]
     )
     with ProcessPoolExecutor(max_workers=n) as ex:
-        futs = [ex.submit(worker, str(path), s, e, str(zones_shp), *extra) for s, e in ranges]
+        futs = [
+            ex.submit(worker, str(path), s, e, str(zones_shp), _chunk_config(), *extra)
+            for s, e in ranges
+        ]
         for fut in futs:
             for key, (rw, jw, cl, ct, w, draw, alng, alat) in fut.result().items():
                 a = acc[key]

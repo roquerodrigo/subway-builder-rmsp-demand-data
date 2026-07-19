@@ -31,6 +31,13 @@ def generate() -> None:
     if not settings.have_inputs():
         typer.echo("dados ausentes em data/sources — rodando `sources` primeiro...")
         sources.acquire()
+        # sem revalidar, uma aquisição incompleta só apareceria lá na frente, como um erro
+        # de arquivo ausente no meio do processamento
+        missing = settings.missing_inputs()
+        if missing:
+            typer.echo("faltam dados mesmo após `sources`: "
+                       + ", ".join(str(path) for path in missing), err=True)
+            raise typer.Exit(code=1)
     settings.ensure_out()
 
     zones = od.load_zones(settings.zones_shp)
