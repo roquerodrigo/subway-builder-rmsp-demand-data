@@ -73,44 +73,53 @@ def load(path: Path | None = None) -> list[dict]:
     found = []
     with open(path, encoding="utf-8") as f:
         for line in f:
-            parts = line.rstrip("\n").split(",", 8)
-            if len(parts) != 9:
+            parts = line.rstrip("\n").split(",", 5)
+            if len(parts) != 6:
                 continue
             try:
                 lng, lat = float(parts[0]), float(parts[1])
-                extent = [float(v) for v in parts[4:8]]
+                ring = [float(v) for v in parts[5].split()] if parts[5] else []
             except ValueError:
                 continue
             found.append({"location": [lng, lat], "type": parts[2], "osm_id": parts[3],
-                          "extent": extent, "name": parts[8]})
+                          "name": parts[4], "ring": ring})
     return found
 
 
 def locate(zones, catalogue: list[dict]) -> list[dict]:
     """Descobre a zona de cada equipamento; descarta os que caem fora do recorte."""
-    located = []
+    located, used = [], set()
     for poi in catalogue:
         zone = zones.zone_of(poi["location"][0], poi["location"][1])
         if zone is None:
             continue
-        located.append({**poi, "zone": zone,
-                        "id": f"{poi['type']}_{_identifier(poi['name'])}"})
+        point_id = f"{poi['type']}_{_identifier(poi['name'])}"
+        if point_id in used:  # homônimos em bairros diferentes precisam de ids distintos
+            point_id = f"{point_id}_{poi['osm_id']}"
+        used.add(point_id)
+        located.append({**poi, "zone": zone, "id": point_id})
     return located
 
 
-def footprint(poi: dict) -> tuple[float, float, float, float]:
-    """Retângulo em que o equipamento é medido: a extensão do OSM, com uma folga mínima.
+def footprint(poi: dict):
+    """Área em que o equipamento é medido: o contorno do OSM com uma folga, ou um círculo
+    em volta do ponto quando o OSM só traz um nó solto.
 
-    Medir num raio fixo fazia uma praça de 40 m herdar os prédios de todo o quarteirão.
+    O retângulo envolvente servia mal a geometrias em L ou alongadas, e o raio fixo fazia uma
+    praça de esquina herdar os prédios de todo o quarteirão.
     """
+    from shapely.geometry import Point, Polygon
+
     margin = settings.poi_radius_m
-    lng, lat = poi["location"]
-    dx = margin / settings.m_per_deg_lng
-    dy = margin / settings.m_per_deg_lat
-    min_lng, min_lat, max_lng, max_lat = poi.get("extent") or [0.0, 0.0, 0.0, 0.0]
-    if max_lng <= min_lng or max_lat <= min_lat:  # nó solto, sem geometria no OSM
-        return (lng - dx, lat - dy, lng + dx, lat + dy)
-    return (min_lng - dx, min_lat - dy, max_lng + dx, max_lat + dy)
+    ring = poi.get("ring") or []
+    degrees = margin / settings.m_per_deg_lat
+    if len(ring) >= 6:
+        shape = Polygon(list(zip(ring[0::2], ring[1::2], strict=True)))
+        if not shape.is_valid:
+            shape = shape.buffer(0)
+        if not shape.is_empty:
+            return shape.buffer(degrees)
+    return Point(poi["location"]).buffer(degrees)
 
 
 def measure(located: list[dict], cells_by_zone: dict) -> None:
@@ -119,17 +128,28 @@ def measure(located: list[dict], cells_by_zone: dict) -> None:
     É o que substitui uma capacidade declarada — o porte sai da mesma fonte que decide onde
     ficam os pontos de trabalho.
     """
+    from shapely import STRtree
+    from shapely import points as as_points
+    from shapely.prepared import prep
+
+    by_zone_index = {}
+    for zone, cells in cells_by_zone.items():
+        active = [v for v in cells.values() if v[_WORK_WEIGHT] > 0]
+        if active:
+            by_zone_index[zone] = (active, STRtree(as_points([(v[6], v[7]) for v in active])))
+
     for poi in located:
-        cells = cells_by_zone.get(poi["zone"], {})
-        min_lng, min_lat, max_lng, max_lat = footprint(poi)
-        inside = total = 0.0
-        for values in cells.values():
-            weight = values[_WORK_WEIGHT]
-            if weight <= 0:
-                continue
-            total += weight
-            if min_lng <= values[6] <= max_lng and min_lat <= values[7] <= max_lat:
-                inside += weight
+        entry = by_zone_index.get(poi["zone"])
+        if entry is None:
+            poi["share"] = 0.0
+            continue
+        active, tree = entry
+        shape = footprint(poi)
+        hits = tree.query(shape)
+        contains = prep(shape).contains
+        inside = sum(active[i][_WORK_WEIGHT] for i in hits
+                     if contains(as_points([(active[i][6], active[i][7])])[0]))
+        total = sum(v[_WORK_WEIGHT] for v in active)
         poi["share"] = inside / total if total > 0 else 0.0
 
 
@@ -173,6 +193,10 @@ def capture(points: list[dict], pops: list[dict], zones, cells_by_zone: dict,
         key = (poi["zone"], poi["type"])
         room = max_share - taken.get(key, 0.0)
         target = int(available * min(poi["share"], max(room, 0.0)))
+        if not poi.get("ring"):
+            # sem contorno no OSM o porte é um chute do entorno: uma escola de bairro herdava
+            # os prédios do quarteirão e saía com dezenas de milhares de pessoas
+            target = min(target, int(settings.poi_spread_above))
         if target < settings.min_pop_size:
             skipped += 1
             continue

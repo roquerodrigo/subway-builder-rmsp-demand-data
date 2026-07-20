@@ -25,6 +25,8 @@ from demand_data.config import settings
 
 log = logging.getLogger(__name__)
 
+_OUTLINE_TOLERANCE = 0.0002  # ~20 m: enxuga o contorno sem perder o formato
+
 
 def _ssl_context() -> ssl.SSLContext | None:
     """Contexto com o CA bundle do certifi — o FTP-over-HTTPS do IBGE serve uma cadeia
@@ -255,57 +257,92 @@ def lotes() -> None:
 
 
 # tipos do OSM -> código da taxonomia do depot. Só o que gera deslocamento próprio.
-POI_QUERIES: tuple[tuple[str, str], ...] = (
-    ("AIR", '["aeroway"="aerodrome"]["iata"]'),
-    ("UNI", '["amenity"="university"]["wikidata"]'),
-    ("SCH", '["amenity"="college"]["wikidata"]'),
-    ("HOS", '["amenity"="hospital"]["wikidata"]'),
-    ("SHP", '["shop"="mall"]["wikidata"]'),
-    ("SPO", '["leisure"="stadium"]["wikidata"]'),
-    ("PRK", '["leisure"="park"]["wikidata"]'),
-    ("ZOO", '["tourism"="zoo"]'),
-    ("CNV", '["amenity"="conference_centre"]'),
-    ("CNV", '["amenity"="exhibition_centre"]'),
-    ("EXT", '["amenity"="bus_station"]["wikidata"]'),
+# O filtro é ter NOME, não ser notável: exigir "wikidata" trazia 30 escolas para os 4,4
+# milhões de moradores cujo destino é a escola. Parques ficam na notabilidade porque os de
+# bairro são incontáveis e cada um atrai pouco.
+# (código, filtro, precisa do contorno). O contorno só muda o resultado em equipamento
+# grande e de forma irregular — campus, parque, aeroporto. Escola e hospital são compactos e
+# cabem no raio mínimo, e pedir a geometria de milhares deles derruba o endpoint público.
+POI_QUERIES: tuple[tuple[str, str, bool], ...] = (
+    ("AIR", '["aeroway"="aerodrome"]["iata"]', True),
+    ("UNI", '["amenity"="university"]["name"]', True),
+    ("PRK", '["leisure"="park"]["wikidata"]', True),
+    ("SPO", '["leisure"="stadium"]["name"]', True),
+    ("ZOO", '["tourism"="zoo"]["name"]', True),
+    ("SCH", '["amenity"="college"]["name"]', True),
+    ("SCH", '["amenity"="school"]["name"]', False),
+    ("HOS", '["amenity"="hospital"]["name"]', True),
+    ("SHP", '["shop"="mall"]["name"]', True),
+    ("CNV", '["amenity"="conference_centre"]["name"]', True),
+    ("CNV", '["amenity"="exhibition_centre"]["name"]', True),
+    ("EXT", '["amenity"="bus_station"]["name"]', True),
 )
 
 
-def parse_overpass(elements, codes: dict[int, str]):
-    """Elementos do Overpass -> ``lng,lat,tipo,osm_id,min_lng,min_lat,max_lng,max_lat,nome``.
+def outline(element: dict) -> list[float]:
+    """Contorno do elemento, simplificado, como ``[lng, lat, lng, lat, ...]``.
 
-    A extensão vem junto porque o porte do equipamento é medido dentro dela: um raio fixo
-    faria uma pracinha de esquina herdar os prédios do quarteirão inteiro. Elementos sem
-    geometria (nós soltos) saem com a extensão zerada e caem no raio mínimo.
+    O porte do equipamento é medido dentro dele. O retângulo envolvente servia mal a
+    geometrias em L ou alongadas — um parque estreito engolia quarteirões que não são dele.
+    """
+    geometry = element.get("geometry") or []
+    ring = [(p["lon"], p["lat"]) for p in geometry
+            if p.get("lon") is not None and p.get("lat") is not None]
+    if len(ring) < 3:
+        return []
+    from shapely.geometry import Polygon
+
+    shape = Polygon(ring)
+    if not shape.is_valid:
+        shape = shape.buffer(0)
+    shape = shape.simplify(_OUTLINE_TOLERANCE, preserve_topology=True)
+    coords = list(getattr(shape, "exterior", shape).coords) if not shape.is_empty else []
+    flat = []
+    for lng, lat in coords:
+        flat += [round(lng, 6), round(lat, 6)]
+    return flat
+
+
+def parse_overpass(elements, codes: dict[int, str]):
+    """Elementos do Overpass -> ``lng,lat,tipo,osm_id,nome,contorno``.
+
+    O contorno vai junto porque o porte é medido dentro dele; elementos sem geometria (nós
+    soltos) saem com o contorno vazio e caem num raio mínimo.
     """
     seen = set()
     for element in elements:
         tags = element.get("tags") or {}
         name = (tags.get("name") or "").strip().replace(",", " ")
-        b = element.get("bounds") or {}
-        center = element.get("center") or element
-        lng, lat = center.get("lon"), center.get("lat")
-        if lng is None and b:  # com "bb" o Overpass deixa de mandar o centro dos ways
-            lng = (b["minlon"] + b["maxlon"]) / 2
-            lat = (b["minlat"] + b["maxlat"]) / 2
+        ring = outline(element)
+        if ring:
+            # centroide do polígono: a média dos vértices contaria o ponto de fechamento
+            # duas vezes e pesaria mais onde o contorno tem mais detalhe
+            from shapely.geometry import Polygon
+
+            centre = Polygon(list(zip(ring[0::2], ring[1::2], strict=True))).centroid
+            lng, lat = centre.x, centre.y
+        else:
+            # nó solto traz lon/lat direto; way consultado sem geometria traz "center"
+            source = element.get("center") or element
+            lng, lat = source.get("lon"), source.get("lat")
         code = codes.get(id(element)) or tags.get("_code")
         if not name or lng is None or lat is None or not code:
             continue
-        key = (code, name)
+        # dedupe pelo id do OSM, não pelo nome: a cidade tem dezenas de escolas homônimas
+        # em bairros diferentes, e todas são destinos distintos
+        key = element.get("id")
         if key in seen or not settings.in_bbox(float(lng), float(lat)):
             continue
         seen.add(key)
-        extent = [b.get("minlon", 0.0), b.get("minlat", 0.0),
-                  b.get("maxlon", 0.0), b.get("maxlat", 0.0)]
         yield (f"{round(float(lng), 6)},{round(float(lat), 6)},{code},{element.get('id')},"
-               + ",".join(f"{round(float(v), 6)}" for v in extent)
-               + f",{name}\n")
+               f"{name}," + " ".join(str(v) for v in ring) + "\n")
 
 
-def _overpass_query() -> str:
+def _overpass_query(filters: str, with_geometry: bool) -> str:
     b = settings.bbox
-    bbox = f"{b[1]},{b[0]},{b[3]},{b[2]}"
-    union = "".join(f"  nwr{filters}({bbox});\n" for _code, filters in POI_QUERIES)
-    return f"[out:json][timeout:180];\n(\n{union});\nout center bb tags;"
+    output = "out geom tags;" if with_geometry else "out center tags;"
+    return (f"[out:json][timeout:300];\n"
+            f"nwr{filters}({b[1]},{b[0]},{b[3]},{b[2]});\n{output}")
 
 
 def _code_for(tags: dict) -> str | None:
@@ -331,25 +368,38 @@ def pois() -> None:
         log.info("já processado: %s", out.name)
         return
     log.info("baixando equipamentos do OpenStreetMap (Overpass)")
-    data = urllib.parse.urlencode({"data": _overpass_query()}).encode()
-    request = urllib.request.Request(
-        settings.overpass_url, data=data, headers={"User-Agent": "demand-data/1.0"}
-    )
-    with urllib.request.urlopen(request, timeout=300) as response:  # noqa: S310
-        payload = json.loads(response.read().decode("utf-8"))
-
-    elements = payload.get("elements", [])
-    codes = {}
-    for element in elements:
-        code = _code_for(element.get("tags") or {})
-        if code:
+    # uma consulta por tipo: com a geometria de todos juntos o endpoint público estoura o
+    # tempo, e assim a falha de um tipo não derruba os outros
+    elements, codes = [], {}
+    for code, filters, with_geometry in POI_QUERIES:
+        found = _overpass(_overpass_query(filters, with_geometry))
+        for element in found:
             codes[id(element)] = code
+        elements += found
+        log.info("  %-4s %5d elementos", code, len(found))
+
     kept = 0
     with open(out, "w", encoding="utf-8") as fout:
         for row in parse_overpass(elements, codes):
             fout.write(row)
             kept += 1
     log.info("equipamentos: %d lidos, %d mantidos -> %s", len(elements), kept, out.name)
+
+
+def _overpass(query: str, tries: int = 3) -> list:
+    """Consulta o Overpass com repetição: o endpoint público responde 504 sob carga."""
+    data = urllib.parse.urlencode({"data": query}).encode()
+    request = urllib.request.Request(
+        settings.overpass_url, data=data, headers={"User-Agent": "demand-data/1.0"}
+    )
+    for attempt in range(max(1, tries) - 1):
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response:  # noqa: S310
+                return json.loads(response.read().decode("utf-8")).get("elements", [])
+        except Exception:
+            time.sleep(10 * (attempt + 1))
+    with urllib.request.urlopen(request, timeout=600) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8")).get("elements", [])
 
 
 def acquire() -> None:

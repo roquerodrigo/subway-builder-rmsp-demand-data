@@ -10,12 +10,15 @@ from demand_data.od import HEALTH, LEISURE, SCHOOL, SHOPPING, WORK
 from demand_data.pops import ACTIVITY_FIELD
 
 
+def ring_around(lng, lat, half=0.0006):
+    return [lng - half, lat - half, lng + half, lat - half,
+            lng + half, lat + half, lng - half, lat + half, lng - half, lat - half]
+
+
 def poi(type_code, name, dx=0.01, dy=0.01, osm_id="1"):
     """Equipamento cobrindo a célula vizinha da fixture de células."""
     return {"location": [BASE_LNG + dx, BASE_LAT + dy], "type": type_code, "osm_id": osm_id,
-            "extent": [BASE_LNG + dx - 0.0006, BASE_LAT + dy - 0.0006,
-                       BASE_LNG + dx + 0.0006, BASE_LAT + dy + 0.0006],
-            "name": name}
+            "ring": ring_around(BASE_LNG + dx, BASE_LAT + dy), "name": name}
 
 
 def zone_cells(zone_weight=100.0, near_weight=100.0):
@@ -37,12 +40,12 @@ def demand(sizes=(200, 150, 150), activity=WORK):
 
 def test_load_le_o_csv_do_openstreetmap(tmp_path):
     path = tmp_path / "pois.csv"
-    path.write_text("-46.6,-23.5,AIR,123,-46.61,-23.51,-46.59,-23.49,Aeroporto Um\n"
+    path.write_text("-46.6,-23.5,AIR,123,Aeroporto Um,-46.61 -23.51 -46.59 -23.49\n"
                     "linha ruim\n"
-                    "x,y,UNI,9,0,0,0,0,Sem coordenada\n", encoding="utf-8")
+                    "x,y,UNI,9,Sem coordenada,\n", encoding="utf-8")
     assert pois.load(path) == [{"location": [-46.6, -23.5], "type": "AIR", "osm_id": "123",
-                               "extent": [-46.61, -23.51, -46.59, -23.49],
-                               "name": "Aeroporto Um"}]
+                               "name": "Aeroporto Um",
+                               "ring": [-46.61, -23.51, -46.59, -23.49]}]
 
 
 def test_load_sem_arquivo_avisa(tmp_path, caplog):
@@ -287,24 +290,22 @@ def test_new_destination_sem_pops_do_motivo():
                                  {1: cells((1, 1, 0.0, 5.0))}) is None
 
 
-def test_footprint_usa_a_extensao_do_osm(configure):
+def test_footprint_usa_o_contorno_do_osm(configure):
     """Medir num raio fixo fazia uma praça pequena herdar o quarteirão inteiro."""
     configure(pois, poi_radius_m=0.0)
-    grande = {"location": [BASE_LNG, BASE_LAT],
-              "extent": [BASE_LNG - 0.01, BASE_LAT - 0.01, BASE_LNG + 0.01, BASE_LAT + 0.01]}
+    grande = {"location": [BASE_LNG, BASE_LAT], "ring": ring_around(BASE_LNG, BASE_LAT, 0.01)}
     pequeno = {"location": [BASE_LNG, BASE_LAT],
-               "extent": [BASE_LNG - 0.0001, BASE_LAT - 0.0001,
-                          BASE_LNG + 0.0001, BASE_LAT + 0.0001]}
-    largura = lambda p: pois.footprint(p)[2] - pois.footprint(p)[0]  # noqa: E731
-    assert largura(grande) > largura(pequeno) * 50
+               "ring": ring_around(BASE_LNG, BASE_LAT, 0.0001)}
+    assert pois.footprint(grande).area > pois.footprint(pequeno).area * 1000
 
 
 def test_footprint_cai_no_raio_minimo_sem_geometria(configure):
     configure(pois, poi_radius_m=100.0)
-    node = {"location": [BASE_LNG, BASE_LAT], "extent": [0.0, 0.0, 0.0, 0.0]}
-    min_lng, min_lat, max_lng, max_lat = pois.footprint(node)
-    assert max_lng > min_lng and max_lat > min_lat
-    assert (max_lng - min_lng) * 101900 == pytest.approx(200, rel=0.05)
+    node = {"location": [BASE_LNG, BASE_LAT], "ring": []}
+    shape = pois.footprint(node)
+    assert not shape.is_empty
+    largura = (shape.bounds[2] - shape.bounds[0]) * 110900
+    assert largura == pytest.approx(200, rel=0.1)
 
 
 def test_measure_so_conta_a_atividade_dentro_do_equipamento(configure):
@@ -312,8 +313,7 @@ def test_measure_so_conta_a_atividade_dentro_do_equipamento(configure):
     configure(pois, poi_radius_m=0.0)
     perto = BASE_LNG + 0.010
     poi_pequeno = {"zone": 1, "location": [perto, BASE_LAT + 0.010],
-                   "extent": [perto - 0.0005, BASE_LAT + 0.0095,
-                              perto + 0.0005, BASE_LAT + 0.0105]}
+                   "ring": ring_around(perto, BASE_LAT + 0.010, 0.0005)}
     pois.measure([poi_pequeno], zone_cells(zone_weight=300.0, near_weight=100.0))
     assert poi_pequeno["share"] == pytest.approx(0.25)
 
@@ -373,3 +373,44 @@ def test_classify_sem_outro_ponto_na_zona_nao_espalha(configure):
              ACTIVITY_FIELD: HEALTH}]
     pois.classify(points, pops, {})
     assert {p["jobId"] for p in pops} == {"z1w0"}, "sem para onde mandar, fica onde está"
+
+
+def test_locate_desambigua_homonimos(zones_shp):
+    """A cidade tem dezenas de escolas com o mesmo nome em bairros diferentes."""
+    from demand_data.od import load_zones
+
+    catalogo = [poi("SCH", "EMEI Vila Nova", osm_id="11"),
+                poi("SCH", "EMEI Vila Nova", dx=0.02, osm_id="22")]
+    located = pois.locate(load_zones(zones_shp), catalogo)
+    assert len({p["id"] for p in located}) == 2
+    assert located[1]["id"].endswith("_22")
+
+
+def test_footprint_conserta_contorno_invalido(configure):
+    configure(pois, poi_radius_m=10.0)
+    borboleta = {"location": [BASE_LNG, BASE_LAT],
+                 "ring": [BASE_LNG, BASE_LAT, BASE_LNG + 0.002, BASE_LAT + 0.002,
+                          BASE_LNG + 0.002, BASE_LAT, BASE_LNG, BASE_LAT + 0.002,
+                          BASE_LNG, BASE_LAT]}
+    assert not pois.footprint(borboleta).is_empty
+
+
+def test_capture_limita_equipamento_sem_contorno(zones_shp, configure):
+    """Sem contorno o porte é um chute do entorno — uma escola de bairro saía com dezenas
+    de milhares de pessoas."""
+    from demand_data.od import load_zones
+
+    configure(pois, poi_max_zone_share=1.0, min_pop_size=10, poi_spread_above=100.0)
+    points, pops = demand(sizes=(500, 500, 500), activity=SCHOOL)
+    sem_contorno = [{"location": [BASE_LNG + 0.01, BASE_LAT + 0.01], "type": "SCH",
+                     "osm_id": "9", "name": "Escola Sem Contorno", "ring": []}]
+    created = pois.capture(points, pops, load_zones(zones_shp),
+                           zone_cells(zone_weight=0.0, near_weight=100.0), sem_contorno)
+    capturado = sum(p["size"] for p in pops if p["jobId"] == created[0]["id"])
+    assert capturado <= 100
+
+
+def test_load_ignora_contorno_ilegivel(tmp_path):
+    path = tmp_path / "pois.csv"
+    path.write_text("-46.6,-23.5,AIR,1,Aeroporto,a b c\n", encoding="utf-8")
+    assert pois.load(path) == []
