@@ -31,7 +31,8 @@ slug="${remote_url#*github.com[:/]}"
 slug="${slug%.git}"
 
 page_url="$(gh api "repos/${slug}/pages" --jq .html_url 2>/dev/null || true)"
-if [[ -z "$page_url" ]]; then
+# a API responde erro em JSON sem status de falha; sem isso a mensagem virava a "URL"
+if [[ "$page_url" != http* ]]; then
     page_url="https://${slug%%/*}.github.io/${slug#*/}/"
     echo "note: enable GitHub Pages for branch '$BRANCH' (root) in the repository settings" >&2
 fi
