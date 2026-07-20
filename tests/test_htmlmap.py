@@ -84,12 +84,12 @@ def test_point_rows_inverte_lng_lat_e_arredonda():
     points = [{"id": "pop-1", "location": [-46.601234567, -23.551234567],
                "residents": 12, "jobs": 34}]
 
-    assert htmlmap._point_rows(points) == [[-23.55123, -46.60123, 12, 34, "pop-1", "", "work", ""]]
+    assert htmlmap._point_rows(points) == [[-23.55123, -46.60123, 12, 34, 1, 0, 0]]
 
 
 def test_point_rows_assume_zero_sem_residents_e_jobs():
-    assert htmlmap._point_rows([{"id": "pop-1", "location": [-46.6, -23.55]}]) == [
-        [-23.55, -46.6, 0, 0, "pop-1", "", "home", ""]
+    assert htmlmap._point_rows([{"id": "z7h1", "location": [-46.6, -23.55]}]) == [
+        [-23.55, -46.6, 0, 0, 0, 7, 0]
     ]
 
 
@@ -185,8 +185,10 @@ def test_point_rows_carrega_nome_e_camada():
     pontos = [{"id": "AIR_X", "name": "Aeroporto X", "location": [-46.6, -23.5],
                "residents": 0, "jobs": 700}]
     linha = htmlmap._point_rows(pontos)[0]
-    assert linha[4] == "AIR_X" and linha[5] == "Aeroporto X" and linha[6] == "poi"
-    assert linha[7] == ""
+    assert linha[4] == 3, "camada dos equipamentos"
+    assert linha[5] == "Aeroporto X"
+    assert linha[6] == htmlmap._TYPE_INDEX[""], "sem tipo declarado"
+    assert linha[7] == 0, "prioridade do rótulo: o maior vem primeiro"
 
 
 def test_mapa_cria_uma_camada_por_tipo(tmp_path):
@@ -204,13 +206,31 @@ def test_mapa_cria_uma_camada_por_tipo(tmp_path):
         assert rotulo in html
 
 
-def test_mapa_esconde_os_rotulos_de_poi_em_zoom_baixo(tmp_path):
-    """Com a região inteira na tela os rótulos se sobrepõem e viram um borrão."""
-    pontos = [{"id": "SPO_Arena", "name": "Arena", "location": [-46.4, -23.5],
-               "residents": 0, "jobs": 90}]
+def test_mapa_so_mostra_rotulo_que_cabe(tmp_path):
+    """Milhares de equipamentos: sem disputa por espaço os nomes viram uma mancha."""
+    pontos = [{"id": f"SPO_Arena{i}", "name": f"Arena {i}", "location": [-46.4, -23.5],
+               "residents": 0, "jobs": 90 - i} for i in range(3)]
     destino = tmp_path / "mapa.html"
     htmlmap.write(pontos, (-46.5, -23.5), destino)
     html = destino.read_text(encoding="utf-8")
     assert ".poi-marker span { display: none; }" in html
-    assert ".poi-labels .poi-marker span" in html
-    assert "map.getZoom() >= 12" in html
+    assert ".poi-marker.named span" in html
+    assert "MAX_LABELS" in html
+    assert "labels.sort" in html, "os maiores reservam espaço primeiro"
+
+
+def test_point_rows_ordena_a_prioridade_pela_demanda(tmp_path):
+    pontos = [
+        {"id": "SPO_Pequeno", "name": "Pequeno", "location": [-46.4, -23.5],
+         "residents": 0, "jobs": 10},
+        {"id": "SPO_Grande", "name": "Grande", "location": [-46.5, -23.5],
+         "residents": 0, "jobs": 900},
+    ]
+    linhas = {row[5]: row[7] for row in htmlmap._point_rows(pontos)}
+    assert linhas["Grande"] < linhas["Pequeno"]
+
+
+def test_zone_of_extrai_o_numero_da_zona():
+    assert htmlmap._zone_of("z73w12") == 73
+    assert htmlmap._zone_of("z301hf5") == 301
+    assert htmlmap._zone_of("EXT_N-46.6") == 0
