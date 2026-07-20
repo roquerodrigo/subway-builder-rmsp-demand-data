@@ -55,6 +55,8 @@ class Settings:
     # fração máxima da demanda de uma zona que um equipamento pode capturar: nenhuma zona é
     # um equipamento só, e sem o teto os de capacidade alta levavam a zona inteira.
     poi_max_zone_share: float = _env_float("DEMAND_POI_MAX_ZONE_SHARE", 0.6)
+    # raio (m) em que se mede a atividade de um equipamento para saber o porte dele
+    poi_radius_m: float = _env_float("DEMAND_POI_RADIUS_M", 250.0)
     # destinos de trabalho por zona de origem (0 = todos). Não altera o total de pops.
     dest_cap: int = _env_int("DEMAND_DEST_CAP", 0)
     # tamanho mínimo de pop: limita nº de pops da zona a P/min_pop_size, fundindo os pops
@@ -102,6 +104,8 @@ class Settings:
         "http://wfs.geosampa.prefeitura.sp.gov.br/geoserver/geoportal/wfs",
     )
     lote_layer: str = _env("DEMAND_LOTE_LAYER", "geoportal:lote_cidadao")
+    # OpenStreetMap: coordenadas dos equipamentos nomeados
+    overpass_url: str = _env("DEMAND_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
     lote_page: int = _env_int("DEMAND_LOTE_PAGE", 10000)
     # só usa lotes numa zona se cobrirem >= esta fração das células CNEFE da zona (evita a
     # amostra de borda em zonas mais fora da capital).
@@ -136,6 +140,10 @@ class Settings:
     @property
     def setor_pop_csv(self) -> Path:
         return self.sources_dir / "setor_pop.csv"
+
+    @property
+    def pois_csv(self) -> Path:
+        return self.sources_dir / "pois.csv"
 
     @property
     def lotes_csv(self) -> Path:

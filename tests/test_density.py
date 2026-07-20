@@ -307,7 +307,7 @@ def test_zone_candidates_ponto_a_ponto_sobre_endereco_real(
     """Regressão: o ponto ficava no centroide ponderado da célula, que cai no meio da rua."""
     configure(density, people_per_point=100.0, sources_dir=tmp_path / "vazio")
     weights = density.setor_weights(cnefe_csv, setor_pop_csv)
-    home, work = density.zone_candidates(
+    home, work, _cells = density.zone_candidates(
         cnefe_csv, zones_shp, weights, {1: (1000.0, 300.0), 2: (500.0, 0.0)}
     )
     addresses = {
@@ -326,7 +326,9 @@ def test_zone_candidates_usa_lotes_quando_a_cobertura_basta(
         density, people_per_point=100.0, sources_dir=lotes_csv.parent, lote_min_coverage=0.1
     )
     weights = density.setor_weights(cnefe_csv, setor_pop_csv)
-    home, _work = density.zone_candidates(cnefe_csv, zones_shp, weights, {1: (1000.0, 300.0)})
+    home, _work, _cells = density.zone_candidates(
+        cnefe_csv, zones_shp, weights, {1: (1000.0, 300.0)}
+    )
     lote_points = {
         (round(float(line.split(",")[0]), 6), round(float(line.split(",")[1]), 6))
         for line in lotes_csv.read_text().splitlines()

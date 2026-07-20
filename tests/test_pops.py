@@ -126,8 +126,8 @@ def test_plan_destinations_sem_pessoas():
 def make_survey(pop, od, activity=None, external=None):
     """Survey em que todos são trabalhadores e a matriz de trabalho é ``od``."""
     if activity is None:
-        activity = {z: {"work": v, "school": 0.0, "other": 0.0} for z, v in pop.items()}
-    flows = {"work": dict(od), "school": {}, "other": {}}
+        activity = {z: {**dict.fromkeys(ACTIVITIES, 0.0), "work": v} for z, v in pop.items()}
+    flows = {a: {} for a in ACTIVITIES} | {"work": dict(od)}
     return Survey(dict(pop), activity, flows, external or {a: {} for a in ACTIVITIES})
 
 
@@ -401,8 +401,10 @@ def test_generate_manda_cada_atividade_para_a_sua_matriz(configure):
     zones = make_zones(1, 2, 3, 4)
     survey = Survey(
         population={1: 3000.0},
-        activity={1: {"work": 1000.0, "school": 1000.0, "other": 1000.0}},
-        flows={"work": {(1, 2): 1.0}, "school": {(1, 3): 1.0}, "other": {(1, 4): 1.0}},
+        activity={1: {**dict.fromkeys(ACTIVITIES, 0.0),
+                      "work": 1000.0, "school": 1000.0, "health": 1000.0}},
+        flows={a: {} for a in ACTIVITIES} | {
+            "work": {(1, 2): 1.0}, "school": {(1, 3): 1.0}, "health": {(1, 4): 1.0}},
         external={a: {} for a in ACTIVITIES},
     )
     points, generated = pops.generate(
@@ -424,9 +426,9 @@ def test_generate_cria_portal_para_destino_fora_das_zonas(configure):
     zones = make_zones(1)
     survey = Survey(
         population={1: 2000.0},
-        activity={1: {"work": 2000.0, "school": 0.0, "other": 0.0}},
-        flows={"work": {(1, 1): 1.0}, "school": {}, "other": {}},
-        external={"work": {1: 1000.0}, "school": {}, "other": {}},
+        activity={1: {**dict.fromkeys(ACTIVITIES, 0.0), "work": 2000.0}},
+        flows={a: {} for a in ACTIVITIES} | {"work": {(1, 1): 1.0}},
+        external={a: {} for a in ACTIVITIES} | {"work": {1: 1000.0}},
     )
     points, generated = pops.generate(zones, survey, {1: spread(1, 6)}, {1: spread(11, 6)})
     gateways = [p for p in points if p["id"].startswith("EXT_")]
@@ -440,9 +442,9 @@ def test_portal_fica_na_borda_do_recorte(configure):
     zones = make_zones(1)
     survey = Survey(
         population={1: 1000.0},
-        activity={1: {"work": 1000.0, "school": 0.0, "other": 0.0}},
-        flows={"work": {}, "school": {}, "other": {}},
-        external={"work": {1: 1000.0}, "school": {}, "other": {}},
+        activity={1: {**dict.fromkeys(ACTIVITIES, 0.0), "work": 1000.0}},
+        flows={a: {} for a in ACTIVITIES},
+        external={a: {} for a in ACTIVITIES} | {"work": {1: 1000.0}},
     )
     points, _generated = pops.generate(zones, survey, {1: spread(1, 4)}, {1: spread(11, 4)})
     gateway = next(p for p in points if p["id"].startswith("EXT_"))
@@ -456,10 +458,10 @@ def test_zona_ausente_do_shapefile_nao_gera_pops(configure):
     zones = make_zones(1)
     survey = Survey(
         population={1: 1000.0, 9: 500.0},
-        activity={z: {"work": v, "school": 0.0, "other": 0.0}
+        activity={z: {**dict.fromkeys(ACTIVITIES, 0.0), "work": v}
                   for z, v in ((1, 1000.0), (9, 500.0))},
-        flows={"work": {(1, 1): 1.0, (9, 1): 1.0}, "school": {}, "other": {}},
-        external={"work": {9: 500.0}, "school": {}, "other": {}},
+        flows={a: {} for a in ACTIVITIES} | {"work": {(1, 1): 1.0, (9, 1): 1.0}},
+        external={a: {} for a in ACTIVITIES} | {"work": {9: 500.0}},
     )
     points, generated = pops.generate(
         zones, survey, {1: spread(1, 4), 9: spread(9, 4)}, {1: spread(11, 4)}

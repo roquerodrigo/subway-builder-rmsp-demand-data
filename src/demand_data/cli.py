@@ -54,12 +54,14 @@ def generate() -> None:
     survey = od.extract_od(settings.od_dbf, set(zones.ids))
 
     weights = density.setor_weights(settings.cnefe_csv, settings.setor_pop_csv)
-    home_cands, work_cands = density.zone_candidates(
+    home_cands, work_cands, cells = density.zone_candidates(
         settings.cnefe_csv, settings.zones_shp, weights, od.demand_by_zone(survey)
     )
 
     points, poplist = pops.generate(zones, survey, home_cands, work_cands)
-    pois.capture(points, poplist, zones)
+    pois.capture(points, poplist, zones, cells)
+    points = pops.aggregate(points, poplist)
+    pois.classify(points, poplist, cells)
     points = pops.aggregate(points, poplist)
 
     if settings.osrm_url:

@@ -40,7 +40,8 @@ def pipeline(monkeypatch):
 
     monkeypatch.setattr(cli, "sources", SimpleNamespace(acquire=record("sources.acquire")))
     monkeypatch.setattr(cli, "railyard", SimpleNamespace(write=record("railyard.write")))
-    monkeypatch.setattr(cli, "pois", SimpleNamespace(capture=record("pois.capture", [])))
+    monkeypatch.setattr(cli, "pois", SimpleNamespace(
+        capture=record("pois.capture", []), classify=record("pois.classify", {})))
     monkeypatch.setattr(cli, "routing", SimpleNamespace(fill=record("routing.fill", 0)))
     monkeypatch.setattr(cli, "od", SimpleNamespace(
         load_zones=record("od.load_zones", zones),
@@ -49,7 +50,8 @@ def pipeline(monkeypatch):
     ))
     monkeypatch.setattr(cli, "density", SimpleNamespace(
         setor_weights=record("density.setor_weights", {"350000001": 1.0}),
-        zone_candidates=record("density.zone_candidates", ({1: "casas"}, {1: "empregos"})),
+        zone_candidates=record(
+            "density.zone_candidates", ({1: "casas"}, {1: "empregos"}, {1: {}})),
     ))
     monkeypatch.setattr(cli, "pops", SimpleNamespace(
         generate=record("pops.generate", (points, poplist)),

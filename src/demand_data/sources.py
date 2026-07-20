@@ -254,6 +254,95 @@ def lotes() -> None:
     log.info("lotes: lidos=%d mantidos=%d -> %s (%.1f MB)", total, kept, out.name, _mb(out))
 
 
+# tipos do OSM -> código da taxonomia do depot. Só o que gera deslocamento próprio.
+POI_QUERIES: tuple[tuple[str, str], ...] = (
+    ("AIR", '["aeroway"="aerodrome"]["iata"]'),
+    ("UNI", '["amenity"="university"]["wikidata"]'),
+    ("SCH", '["amenity"="college"]["wikidata"]'),
+    ("HOS", '["amenity"="hospital"]["wikidata"]'),
+    ("SHP", '["shop"="mall"]["wikidata"]'),
+    ("SPO", '["leisure"="stadium"]["wikidata"]'),
+    ("PRK", '["leisure"="park"]["wikidata"]'),
+    ("ZOO", '["tourism"="zoo"]'),
+    ("CNV", '["amenity"="conference_centre"]'),
+    ("CNV", '["amenity"="exhibition_centre"]'),
+    ("EXT", '["amenity"="bus_station"]["wikidata"]'),
+)
+
+
+def parse_overpass(elements, codes: dict[int, str]):
+    """Elementos do Overpass -> ``lng,lat,tipo,osm_id,nome``.
+
+    O nome é o que aparece no mapa; ``osm_id`` deixa cada equipamento rastreável até o
+    OpenStreetMap, que é o motivo de não haver coordenada escrita à mão aqui.
+    """
+    seen = set()
+    for element in elements:
+        tags = element.get("tags") or {}
+        name = (tags.get("name") or "").strip().replace(",", " ")
+        center = element.get("center") or element
+        lng, lat = center.get("lon"), center.get("lat")
+        code = codes.get(id(element)) or tags.get("_code")
+        if not name or lng is None or lat is None or not code:
+            continue
+        key = (code, name)
+        if key in seen or not settings.in_bbox(float(lng), float(lat)):
+            continue
+        seen.add(key)
+        yield f"{round(float(lng), 6)},{round(float(lat), 6)},{code},{element.get('id')},{name}\n"
+
+
+def _overpass_query() -> str:
+    b = settings.bbox
+    bbox = f"{b[1]},{b[0]},{b[3]},{b[2]}"
+    union = "".join(f"  nwr{filters}({bbox});\n" for _code, filters in POI_QUERIES)
+    return f"[out:json][timeout:180];\n(\n{union});\nout center tags;"
+
+
+def _code_for(tags: dict) -> str | None:
+    """Qual código da taxonomia o elemento atende (o primeiro que casar)."""
+    checks = (
+        ("AIR", "aeroway", "aerodrome"), ("UNI", "amenity", "university"),
+        ("SCH", "amenity", "college"), ("HOS", "amenity", "hospital"),
+        ("SHP", "shop", "mall"), ("SPO", "leisure", "stadium"),
+        ("PRK", "leisure", "park"), ("ZOO", "tourism", "zoo"),
+        ("CNV", "amenity", "conference_centre"), ("CNV", "amenity", "exhibition_centre"),
+        ("EXT", "amenity", "bus_station"),
+    )
+    for code, key, value in checks:
+        if tags.get(key) == value:
+            return code
+    return None
+
+
+def pois() -> None:
+    """Baixa os equipamentos do OpenStreetMap (Overpass) para ``pois.csv``."""
+    out = settings.pois_csv
+    if out.exists():
+        log.info("já processado: %s", out.name)
+        return
+    log.info("baixando equipamentos do OpenStreetMap (Overpass)")
+    data = urllib.parse.urlencode({"data": _overpass_query()}).encode()
+    request = urllib.request.Request(
+        settings.overpass_url, data=data, headers={"User-Agent": "demand-data/1.0"}
+    )
+    with urllib.request.urlopen(request, timeout=300) as response:  # noqa: S310
+        payload = json.loads(response.read().decode("utf-8"))
+
+    elements = payload.get("elements", [])
+    codes = {}
+    for element in elements:
+        code = _code_for(element.get("tags") or {})
+        if code:
+            codes[id(element)] = code
+    kept = 0
+    with open(out, "w", encoding="utf-8") as fout:
+        for row in parse_overpass(elements, codes):
+            fout.write(row)
+            kept += 1
+    log.info("equipamentos: %d lidos, %d mantidos -> %s", len(elements), kept, out.name)
+
+
 def acquire() -> None:
     """Baixa + processa tudo (idempotente)."""
     settings.ensure_sources()
@@ -261,3 +350,4 @@ def acquire() -> None:
     cnefe()
     censo()
     lotes()
+    pois()

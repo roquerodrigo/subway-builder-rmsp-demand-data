@@ -84,12 +84,12 @@ def test_point_rows_inverte_lng_lat_e_arredonda():
     points = [{"id": "pop-1", "location": [-46.601234567, -23.551234567],
                "residents": 12, "jobs": 34}]
 
-    assert htmlmap._point_rows(points) == [[-23.55123, -46.60123, 12, 34, "pop-1", "", "work"]]
+    assert htmlmap._point_rows(points) == [[-23.55123, -46.60123, 12, 34, "pop-1", "", "work", ""]]
 
 
 def test_point_rows_assume_zero_sem_residents_e_jobs():
     assert htmlmap._point_rows([{"id": "pop-1", "location": [-46.6, -23.55]}]) == [
-        [-23.55, -46.6, 0, 0, "pop-1", "", "home"]
+        [-23.55, -46.6, 0, 0, "pop-1", "", "home", ""]
     ]
 
 
@@ -186,6 +186,7 @@ def test_point_rows_carrega_nome_e_camada():
                "residents": 0, "jobs": 700}]
     linha = htmlmap._point_rows(pontos)[0]
     assert linha[4] == "AIR_X" and linha[5] == "Aeroporto X" and linha[6] == "poi"
+    assert linha[7] == ""
 
 
 def test_mapa_cria_uma_camada_por_tipo(tmp_path):

@@ -17,7 +17,9 @@ log = logging.getLogger(__name__)
 
 
 def write(points: list[dict], pops: list[dict], path: Path) -> None:
-    data = {"points": points, "pops": pops}
+    # campos com "_" servem à geração (motivo da viagem, zona do equipamento), não ao jogo
+    strip = lambda item: {k: v for k, v in item.items() if not k.startswith("_")}  # noqa: E731
+    data = {"points": [strip(p) for p in points], "pops": [strip(p) for p in pops]}
     payload = json.dumps(data, separators=(",", ":"))
     path.write_text(payload, encoding="utf-8")
     gz = path.with_suffix(path.suffix + ".gz")

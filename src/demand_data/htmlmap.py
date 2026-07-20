@@ -37,8 +37,12 @@ window.addEventListener('load', function () {
     var points = %(points)s;
     var groups = %(groups)s;
     var map = %(map)s;
+    var KINDS = {SCH: 'ensino', HOS: 'saúde', SHP: 'comércio', PRK: 'lazer',
+                 UNI: 'ensino', SPO: 'lazer', ZOO: 'lazer', CNV: 'eventos',
+                 AIR: 'aeroporto', EXT: 'conexão externa'};
     function label(p) {
-        return (p[5] || p[4]) + ': ' + p[2] + ' moram, ' + p[3] + ' trabalham';
+        var tipo = p[7] ? ' [' + (KINDS[p[7]] || p[7]) + ']' : '';
+        return (p[5] || p[4]) + tipo + ': ' + p[2] + ' moram, ' + p[3] + ' trabalham';
     }
     for (var i = 0; i < points.length; i++) {
         var p = points[i], residents = p[2], jobs = p[3], total = residents + jobs;
@@ -127,7 +131,7 @@ def _point_rows(points: list[dict]) -> list:
         lng, lat = p["location"]
         rows.append([round(lat, _COORD_DECIMALS), round(lng, _COORD_DECIMALS),
                      p.get("residents", 0), p.get("jobs", 0), p["id"],
-                     p.get("name", ""), _kind(p)])
+                     p.get("name", ""), _kind(p), p.get("type", "")])
     return rows
 
 

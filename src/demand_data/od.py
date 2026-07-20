@@ -64,13 +64,21 @@ def _as_int(v) -> int | None:
         return None
 
 
-# Motivos de destino da pesquisa (validados contra ZONATRA1/ZONA_ESC nos microdados):
-# 1-3 são trabalho (indústria, comércio, serviços), 4 é educação, 8 é a volta para casa.
-_WORK_MOTIVES = frozenset({1, 2, 3})
-_OTHER_MOTIVES = frozenset({5, 6, 7, 9, 10, 11})
+# Motivos de destino, do dicionário oficial da pesquisa (Layout_BD_OD2023):
+# 1 Trabalho Indústria, 2 Trabalho Comércio, 3 Trabalho Serviços, 4 Escola/Educação,
+# 5 Compras, 6 Médico/Dentista/Saúde, 7 Recreação/Visitas/Lazer, 8 Residência,
+# 9 Procurar Emprego, 10 Assuntos Pessoais, 11 Refeição.
+WORK, SCHOOL = "work", "school"
+SHOPPING, HEALTH, LEISURE, PERSONAL = "shopping", "health", "leisure", "personal"
+ACTIVITIES = (WORK, SCHOOL, SHOPPING, HEALTH, LEISURE, PERSONAL)
 
-WORK, SCHOOL, OTHER = "work", "school", "other"
-ACTIVITIES = (WORK, SCHOOL, OTHER)
+# atividades sem destino fixo declarado: a pessoa que não trabalha nem estuda é distribuída
+# entre elas pelo volume de viagens que a própria pesquisa registra
+FLOATING = (SHOPPING, HEALTH, LEISURE, PERSONAL)
+
+_MOTIVE_ACTIVITY = {
+    5: SHOPPING, 6: HEALTH, 7: LEISURE, 9: PERSONAL, 10: PERSONAL, 11: SHOPPING,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,15 +124,16 @@ def accumulate_od(records: Iterable[dict], zones: set[int]) -> Survey:
                                                       for a in ACTIVITIES}
     external: dict[str, dict[int, float]] = {a: collections.defaultdict(float)
                                              for a in ACTIVITIES}
+    floating: dict[int, float] = collections.defaultdict(float)
     seen: set[tuple] = set()
     for r in records:
         home = _as_int(r.get("ZONA"))
-        trip_motive = _as_int(r.get("MOTIVO_D"))
-        if trip_motive in _OTHER_MOTIVES:
+        activity_of_trip = _MOTIVE_ACTIVITY.get(_as_int(r.get("MOTIVO_D")))
+        if activity_of_trip:
             origin, destination = _as_int(r.get("ZONA_O")), _as_int(r.get("ZONA_D"))
             weight = r.get("FE_VIA") or 0.0
             if weight and origin in zones and destination in zones:
-                flows[OTHER][(origin, destination)] += weight
+                flows[activity_of_trip][(origin, destination)] += weight
 
         key = (r.get("ID_DOM"), r.get("ID_FAM"), r.get("ID_PESS"))
         if key in seen:
@@ -143,21 +152,41 @@ def accumulate_od(records: Iterable[dict], zones: set[int]) -> Survey:
         elif school is not None:
             name, target = SCHOOL, school
         else:
-            name, target = OTHER, None
-        activity[home][name] += people
-        if target is None:
+            floating[home] += people
             continue
+        activity[home][name] += people
         if target in zones:
             flows[name][(home, target)] += people
         else:
             external[name][home] += people
 
+    _spread_floating(activity, floating, flows)
     return Survey(
         dict(population),
         {z: dict(shares) for z, shares in activity.items()},
         {a: dict(f) for a, f in flows.items()},
         {a: dict(e) for a, e in external.items()},
     )
+
+
+def _spread_floating(activity, floating, flows) -> None:
+    """Reparte quem não trabalha nem estuda entre compras, saúde, lazer e assuntos pessoais.
+
+    O peso de cada motivo é o volume de viagens que sai da própria zona por ele — quem mora
+    num lugar de muita viagem de saúde tem mais chance de ter a saúde como destino principal.
+    """
+    outgoing = {name: collections.defaultdict(float) for name in FLOATING}
+    for name in FLOATING:
+        for (origin, _destination), weight in flows[name].items():
+            outgoing[name][origin] += weight
+    for zone, people in floating.items():
+        weights = [outgoing[name].get(zone, 0.0) for name in FLOATING]
+        total = sum(weights)
+        if total <= 0:  # zona sem viagem registrada por esses motivos
+            activity[zone][PERSONAL] += people
+            continue
+        for name, weight in zip(FLOATING, weights, strict=True):
+            activity[zone][name] += people * weight / total
 
 
 def extract_od(dbf_path: Path, zones: set[int]) -> Survey:
@@ -167,12 +196,12 @@ def extract_od(dbf_path: Path, zones: set[int]) -> Survey:
     survey = accumulate_od(DBF(str(dbf_path), encoding="latin-1", raw=False), zones)
     totals = survey.totals()
     log.info(
-        "população: Σ=%.0f em %d zonas | destino principal: %.0f trabalho, %.0f escola, "
-        "%.0f outros motivos | fora das zonas: %.0f",
+        "população: Σ=%.0f em %d zonas | fora das zonas: %.0f",
         sum(survey.population.values()), len(survey.population),
-        totals[WORK], totals[SCHOOL], totals[OTHER],
         sum(sum(e.values()) for e in survey.external.values()),
     )
+    log.info("destino principal: " + ", ".join(
+        f"{totals[name]:.0f} {name}" for name in ACTIVITIES))
     for name in ACTIVITIES:
         log.info("  matriz %-6s %6d pares (Σ=%.0f)",
                  name, len(survey.flows[name]), sum(survey.flows[name].values()))

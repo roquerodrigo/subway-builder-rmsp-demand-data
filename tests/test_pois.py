@@ -1,182 +1,153 @@
-"""Equipamentos nomeados: localização nas zonas e captura de demanda."""
+"""Equipamentos nomeados: leitura do OSM, porte medido e captura por motivo da viagem."""
 
 from __future__ import annotations
 
 import pytest
-from tests.conftest import BASE_LAT, BASE_LNG
+from tests.conftest import BASE_LAT, BASE_LNG, cells
 
 from demand_data import pois
-
-CATALOGUE = (
-    ("AIR", "Aeroporto Teste", [BASE_LNG + 0.01, BASE_LAT + 0.01], 300),
-    ("UNI", "Universidade Teste", [BASE_LNG + 0.06, BASE_LAT + 0.01], 100),
-)
+from demand_data.od import HEALTH, LEISURE, SCHOOL, SHOPPING, WORK
+from demand_data.pops import ACTIVITY_FIELD
 
 
-def demand():
+def poi(type_code, name, dx=0.01, dy=0.01, osm_id="1"):
+    return {"location": [BASE_LNG + dx, BASE_LAT + dy], "type": type_code,
+            "osm_id": osm_id, "name": name}
+
+
+def zone_cells(zone_weight=100.0, near_weight=100.0):
+    """Células da zona 1: uma colada no equipamento, outra longe."""
+    return {1: cells((10, 10, 0.0, near_weight), (30, 30, 0.0, zone_weight))}
+
+
+def demand(sizes=(200, 150, 150), activity=WORK):
     points = [
-        {"id": "z1h1", "location": [BASE_LNG, BASE_LAT], "jobs": 0, "residents": 500,
+        {"id": "z1h1", "location": [BASE_LNG, BASE_LAT], "jobs": 0, "residents": sum(sizes),
          "popIds": []},
-        {"id": "z1w1", "location": [BASE_LNG + 0.02, BASE_LAT], "jobs": 500, "residents": 0,
-         "popIds": []},
-        {"id": "z2w1", "location": [BASE_LNG + 0.05, BASE_LAT], "jobs": 200, "residents": 0,
-         "popIds": []},
+        {"id": "z1w1", "location": [BASE_LNG + 0.02, BASE_LAT], "jobs": sum(sizes),
+         "residents": 0, "popIds": []},
     ]
-    pops = [
-        {"id": "p1", "size": 200, "residenceId": "z1h1", "jobId": "z1w1"},
-        {"id": "p2", "size": 150, "residenceId": "z1h1", "jobId": "z1w1"},
-        {"id": "p3", "size": 150, "residenceId": "z1h1", "jobId": "z1w1"},
-        {"id": "p4", "size": 200, "residenceId": "z1h1", "jobId": "z2w1"},
-    ]
+    pops = [{"id": f"p{i}", "size": size, "residenceId": "z1h1", "jobId": "z1w1",
+             ACTIVITY_FIELD: activity} for i, size in enumerate(sizes)]
     return points, pops
 
 
-def test_locate_descobre_a_zona_de_cada_equipamento(zones_shp):
+def test_load_le_o_csv_do_openstreetmap(tmp_path):
+    path = tmp_path / "pois.csv"
+    path.write_text("-46.6,-23.5,AIR,123,Aeroporto Um\n"
+                    "linha ruim\n"
+                    "x,y,UNI,9,Sem coordenada\n", encoding="utf-8")
+    assert pois.load(path) == [{"location": [-46.6, -23.5], "type": "AIR",
+                               "osm_id": "123", "name": "Aeroporto Um"}]
+
+
+def test_load_sem_arquivo_avisa(tmp_path, caplog):
+    with caplog.at_level("WARNING"):
+        assert pois.load(tmp_path / "ausente.csv") == []
+    assert "rode `sources`" in caplog.text
+
+
+def test_locate_descobre_a_zona(zones_shp):
     from demand_data.od import load_zones
 
-    located = pois.locate(load_zones(zones_shp), CATALOGUE)
-    assert [p["zone"] for p in located] == [1, 2]
-    assert [p["id"] for p in located] == ["AIR_Aeroporto_Teste", "UNI_Universidade_Teste"]
+    located = pois.locate(load_zones(zones_shp), [poi("AIR", "Aeroporto Teste")])
+    assert located[0]["zone"] == 1
+    assert located[0]["id"] == "AIR_Aeroporto_Teste"
 
 
-def test_locate_descarta_equipamento_fora_do_recorte(zones_shp):
+def test_locate_descarta_fora_do_recorte(zones_shp):
     from demand_data.od import load_zones
 
-    fora = (("AIR", "Fora", [BASE_LNG - 10, BASE_LAT], 100),)
+    fora = [{"location": [BASE_LNG - 10, BASE_LAT], "type": "AIR", "osm_id": "1", "name": "F"}]
     assert pois.locate(load_zones(zones_shp), fora) == []
 
 
-def test_capture_reetiqueta_destinos_ate_a_capacidade(zones_shp):
+def test_measure_mede_o_porte_pela_atividade_ao_redor():
+    """O porte substitui a capacidade declarada: sai da atividade medida no entorno."""
+    located = [{"zone": 1, "location": [BASE_LNG + 0.010, BASE_LAT + 0.010]}]
+    pois.measure(located, zone_cells(zone_weight=300.0, near_weight=100.0))
+    assert located[0]["share"] == pytest.approx(0.25)
+
+
+def test_measure_sem_atividade_na_zona():
+    located = [{"zone": 99, "location": [BASE_LNG, BASE_LAT]}]
+    pois.measure(located, {})
+    assert located[0]["share"] == 0.0
+
+
+def test_capture_respeita_o_motivo_da_viagem(zones_shp, configure):
+    """Um pop de compras não pode virar visita ao hospital."""
     from demand_data.od import load_zones
 
-    points, pops = demand()
-    created = pois.capture(points, pops, load_zones(zones_shp), CATALOGUE)
-    assert len(created) == 2
-    airport = next(p for p in created if p["name"] == "Aeroporto Teste")
-    captured = sum(p["size"] for p in pops if p["jobId"] == airport["id"])
-    assert captured >= 300, "toma pops até cobrir a capacidade"
-    assert captured <= 500, "não toma a zona inteira"
+    configure(pois, poi_max_zone_share=1.0, min_pop_size=10)
+    points, pops = demand(activity=SHOPPING)
+    assert pois.capture(points, pops, load_zones(zones_shp), zone_cells(),
+                        [poi("HOS", "Hospital Teste")]) == []
+    assert all(p["jobId"] == "z1w1" for p in pops)
 
 
-def test_capture_preserva_a_populacao(zones_shp):
+def test_capture_aceita_o_motivo_correspondente(zones_shp, configure):
     from demand_data.od import load_zones
 
+    configure(pois, poi_max_zone_share=1.0, min_pop_size=10)
+    points, pops = demand(activity=SHOPPING)
+    created = pois.capture(points, pops, load_zones(zones_shp), zone_cells(),
+                           [poi("SHP", "Shopping Teste")])
+    assert len(created) == 1
+    assert any(p["jobId"] == created[0]["id"] for p in pops)
+
+
+def test_capture_aceita_trabalho_em_qualquer_tipo(zones_shp, configure):
+    """Gente trabalha em hospital, aeroporto e zoológico."""
+    from demand_data.od import load_zones
+
+    configure(pois, poi_max_zone_share=1.0, min_pop_size=10)
+    points, pops = demand(activity=WORK)
+    created = pois.capture(points, pops, load_zones(zones_shp), zone_cells(),
+                           [poi("ZOO", "Zoológico Teste")])
+    assert created and any(p["jobId"] == created[0]["id"] for p in pops)
+
+
+def test_capture_preserva_a_populacao(zones_shp, configure):
+    from demand_data.od import load_zones
+
+    configure(pois, poi_max_zone_share=0.5, min_pop_size=10)
     points, pops = demand()
     total = sum(p["size"] for p in pops)
-    pois.capture(points, pops, load_zones(zones_shp), CATALOGUE)
-    assert sum(p["size"] for p in pops) == total, "captura reetiqueta, não cria demanda"
+    pois.capture(points, pops, load_zones(zones_shp), zone_cells(), [poi("SHP", "Loja")])
+    assert sum(p["size"] for p in pops) == total
+    assert len({p["id"] for p in pops}) == len(pops)
 
 
-def test_capture_nao_deixa_dois_equipamentos_disputarem_o_mesmo_pop(zones_shp):
+def test_capture_limita_pelo_porte_medido(zones_shp, configure):
+    """Metade da atividade da zona ao redor do equipamento = metade da demanda."""
     from demand_data.od import load_zones
 
-    vizinhos = (
-        ("SHP", "Shopping A", [BASE_LNG + 0.01, BASE_LAT + 0.01], 1000),
-        ("SHP", "Shopping B", [BASE_LNG + 0.02, BASE_LAT + 0.01], 1000),
-    )
-    points, pops = demand()
-    created = pois.capture(points, pops, load_zones(zones_shp), vizinhos)
-    destinos = [p["jobId"] for p in pops]
-    assert len(destinos) == len(set(p["id"] for p in pops)), "cada pop tem um destino só"
-    if len(created) == 2:
-        a, b = (p["id"] for p in created)
-        assert not (set(d for d in destinos if d == a) & set(d for d in destinos if d == b))
-
-
-def test_capture_ignora_equipamento_sem_demanda_na_zona(zones_shp, caplog):
-    from demand_data.od import load_zones
-
-    points, pops = demand()
-    for pop in pops:
-        pop["jobId"] = "z1w1"
-    solo = (("UNI", "Sem Demanda", [BASE_LNG + 0.06, BASE_LAT + 0.01], 100),)
-    with caplog.at_level("WARNING"):
-        assert pois.capture(points, pops, load_zones(zones_shp), solo) == []
-    assert "sem demanda para capturar" in caplog.text
-
-
-def test_capture_marca_tipo_e_nome_no_ponto(zones_shp):
-    from demand_data.od import load_zones
-
-    points, pops = demand()
-    created = pois.capture(points, pops, load_zones(zones_shp), CATALOGUE)
-    assert all(p["type"] and p["name"] for p in created)
-    assert all(p["id"].split("_")[0] == p["type"] for p in created)
-
-
-def test_catalogo_real_usa_codigos_da_taxonomia_do_depot():
-    conhecidos = {"AIR", "EXT", "UNI", "HOS", "SHP", "SPO", "CNV", "PRK", "ZOO"}
-    assert {code for code, _n, _l, _c in pois.CATALOGUE} <= conhecidos
-
-
-def test_catalogo_real_esta_dentro_do_recorte():
-    from demand_data.config import settings
-
-    for _code, name, (lng, lat), capacity in pois.CATALOGUE:
-        assert settings.in_bbox(lng, lat), f"{name} fora do bbox"
-        assert capacity > 0
-
-
-def test_capture_sem_equipamento_no_recorte_nao_faz_nada(zones_shp):
-    from demand_data.od import load_zones
-
-    points, pops = demand()
-    fora = (("AIR", "Fora", [BASE_LNG - 10, BASE_LAT], 100),)
-    assert pois.capture(points, pops, load_zones(zones_shp), fora) == []
-    assert all(p["jobId"] in ("z1w1", "z2w1") for p in pops)
-
-
-def test_capture_nao_passa_da_capacidade(zones_shp, configure):
-    """Tomar pops inteiros fazia o equipamento estourar a própria capacidade."""
-    from demand_data.od import load_zones
-
-    configure(pois, poi_max_zone_share=1.0)
-    points, pops = demand()
-    pequeno = (("SPO", "Autódromo Teste", [BASE_LNG + 0.01, BASE_LAT + 0.01], 100),)
-    created = pois.capture(points, pops, load_zones(zones_shp), pequeno)
+    configure(pois, poi_max_zone_share=1.0, min_pop_size=10)
+    points, pops = demand(sizes=(400, 400, 200))
+    created = pois.capture(points, pops, load_zones(zones_shp),
+                           zone_cells(zone_weight=100.0, near_weight=100.0),
+                           [poi("SHP", "Loja")])
     capturado = sum(p["size"] for p in pops if p["jobId"] == created[0]["id"])
-    assert capturado == 100
+    assert capturado == pytest.approx(500, rel=0.05)
 
 
 def test_capture_deixa_demanda_para_a_zona(zones_shp, configure):
-    """Sem teto, um equipamento de capacidade alta levava a zona inteira."""
     from demand_data.od import load_zones
 
-    configure(pois, poi_max_zone_share=0.6)
+    configure(pois, poi_max_zone_share=0.6, min_pop_size=10)
     points, pops = demand()
-    faminto = (("AIR", "Aeroporto Grande", [BASE_LNG + 0.01, BASE_LAT + 0.01], 10**6),)
-    created = pois.capture(points, pops, load_zones(zones_shp), faminto)
-    poi_id = created[0]["id"]
+    created = pois.capture(points, pops, load_zones(zones_shp),
+                           zone_cells(zone_weight=0.0, near_weight=100.0),
+                           [poi("SHP", "Loja")])
     na_zona = sum(p["size"] for p in pops if p["jobId"] == "z1w1")
-    capturado = sum(p["size"] for p in pops if p["jobId"] == poi_id)
-    assert na_zona > 0, "a zona não pode ficar sem destino genérico"
-    assert capturado == pytest.approx(0.6 * (na_zona + capturado), rel=0.01)
+    capturado = sum(p["size"] for p in pops if p["jobId"] == created[0]["id"])
+    assert na_zona > 0, "o teto impede um equipamento de levar a zona inteira"
+    assert capturado == pytest.approx(0.6 * (na_zona + capturado), rel=0.05)
 
 
-def test_capture_toma_fatia_de_todas_as_origens(zones_shp, configure):
-    """Tomar os maiores pops primeiro deixava o equipamento com pouquíssimas origens."""
-    from demand_data.od import load_zones
-
-    configure(pois, poi_max_zone_share=1.0)
-    points = [{"id": "z1w1", "location": [BASE_LNG + 0.02, BASE_LAT], "jobs": 900,
-               "residents": 0, "popIds": []}]
-    pops = [{"id": f"p{i}", "size": 300, "residenceId": f"casa{i}", "jobId": "z1w1"}
-            for i in range(3)]
-    alvo = (("SHP", "Shopping Teste", [BASE_LNG + 0.01, BASE_LAT + 0.01], 300),)
-    created = pois.capture(points, pops, load_zones(zones_shp), alvo)
-    origens = {p["residenceId"] for p in pops if p["jobId"] == created[0]["id"]}
-    assert len(origens) == 3, "cada origem cede a mesma fração"
-
-
-def test_capture_fatia_preserva_a_populacao(zones_shp, configure):
-    from demand_data.od import load_zones
-
-    configure(pois, poi_max_zone_share=0.5)
-    points, pops = demand()
-    total = sum(p["size"] for p in pops)
-    pois.capture(points, pops, load_zones(zones_shp), CATALOGUE)
-    assert sum(p["size"] for p in pops) == total
-    assert len({p["id"] for p in pops}) == len(pops), "ids duplicados após fatiar"
+def test_capture_sem_equipamentos():
+    assert pois.capture([], [], None, {}, []) == []
 
 
 def test_shares_reparte_proporcionalmente_sem_exceder():
@@ -187,29 +158,126 @@ def test_shares_reparte_proporcionalmente_sem_exceder():
     assert all(part <= size for part, size in zip(repartido, [1, 1, 100], strict=True))
 
 
-def test_capture_toma_o_pop_inteiro_quando_a_fatia_o_cobre(zones_shp, configure):
-    """Fatia igual ao pop dispensa criar um pop novo — reetiqueta o que já existe."""
+def classify_case(activities):
+    points = [{"id": "z1h1", "location": [BASE_LNG, BASE_LAT], "jobs": 0, "residents": 10}]
+    pops = []
+    for index, activity in enumerate(activities):
+        point_id = f"z1w{index}"
+        points.append({"id": point_id, "location": [BASE_LNG + 0.001 * index, BASE_LAT],
+                       "jobs": 100, "residents": 0})
+        pops.append({"id": f"p{index}", "size": 100, "residenceId": "z1h1",
+                     "jobId": point_id, ACTIVITY_FIELD: activity})
+    return points, pops
+
+
+def test_classify_tipa_o_destino_pelo_motivo_que_o_alimenta():
+    points, pops = classify_case([HEALTH, SHOPPING, SCHOOL, LEISURE])
+    pois.classify(points, pops, {})
+    tipos = {p["id"]: p.get("type") for p in points if p.get("type")}
+    assert tipos == {"z1w0": "HOS", "z1w1": "SHP", "z1w2": "SCH", "z1w3": "PRK"}
+
+
+def test_classify_usa_o_motivo_dominante():
+    points, pops = classify_case([HEALTH])
+    pops.append({"id": "extra", "size": 500, "residenceId": "z1h1", "jobId": "z1w0",
+                 ACTIVITY_FIELD: SHOPPING})
+    pois.classify(points, pops, {})
+    assert next(p for p in points if p["id"] == "z1w0")["type"] == "SHP"
+
+
+def test_classify_cobre_todo_motivo_que_chega_na_zona():
+    """Se alguém vai à zona por saúde, a zona tem um destino de saúde."""
+    points, pops = classify_case([SHOPPING])
+    pops.append({"id": "extra", "size": 10, "residenceId": "z1h1", "jobId": "z1w0",
+                 ACTIVITY_FIELD: HEALTH})
+    pois.classify(points, pops, {1: cells((5, 5, 0.0, 50.0))})
+    tipos = {p.get("type") for p in points if p.get("type")}
+    assert "HOS" in tipos and "SHP" in tipos
+
+
+def test_classify_nao_rouba_a_cobertura_de_outro_motivo():
+    """Retipar o ponto que sustenta um motivo deixaria esse motivo a descoberto."""
+    points, pops = classify_case([HEALTH, SHOPPING, SCHOOL])
+    for activity in (LEISURE, HEALTH, SHOPPING):
+        pops.append({"id": f"x{activity}", "size": 5, "residenceId": "z1h1",
+                     "jobId": "z1w0", ACTIVITY_FIELD: activity})
+    pois.classify(points, pops, {1: cells((5, 5, 0.0, 50.0))})
+    tipos = [p.get("type") for p in points if p.get("type")]
+    assert "HOS" in tipos and "SHP" in tipos and "SCH" in tipos
+
+
+def test_classify_ignora_equipamento_nomeado():
+    points, pops = classify_case([HEALTH])
+    points[1]["name"] = "Hospital Nomeado"
+    points[1]["type"] = "HOS"
+    pois.classify(points, pops, {})
+    assert points[1]["type"] == "HOS"
+
+
+def test_capture_leva_o_pop_inteiro_quando_a_fatia_o_cobre(zones_shp, configure):
     from demand_data.od import load_zones
 
-    configure(pois, poi_max_zone_share=1.0)
-    points = [{"id": "z1w1", "location": [BASE_LNG + 0.02, BASE_LAT], "jobs": 100,
-               "residents": 0, "popIds": []}]
-    pops = [{"id": "p1", "size": 100, "residenceId": "casa", "jobId": "z1w1"}]
-    alvo = (("SHP", "Loja Teste", [BASE_LNG + 0.01, BASE_LAT + 0.01], 500),)
-    created = pois.capture(points, pops, load_zones(zones_shp), alvo)
-    assert len(pops) == 1, "não cria pop novo quando leva o pop inteiro"
+    configure(pois, poi_max_zone_share=1.0, min_pop_size=10)
+    points, pops = demand(sizes=(100,))
+    created = pois.capture(points, pops, load_zones(zones_shp),
+                           zone_cells(zone_weight=0.0, near_weight=100.0),
+                           [poi("SHP", "Loja")])
+    assert len(pops) == 1, "sem pop novo quando o equipamento leva o pop inteiro"
     assert pops[0]["jobId"] == created[0]["id"]
 
 
-def test_capture_ignora_pop_com_fatia_zero(zones_shp, configure):
-    """Pop pequeno demais para render uma pessoa fica onde está."""
+def test_capture_ignora_fatia_zero(zones_shp, configure):
     from demand_data.od import load_zones
 
-    configure(pois, poi_max_zone_share=1.0)
-    points = [{"id": "z1w1", "location": [BASE_LNG + 0.02, BASE_LAT], "jobs": 1001,
-               "residents": 0, "popIds": []}]
-    pops = [{"id": "grande", "size": 1000, "residenceId": "a", "jobId": "z1w1"},
-            {"id": "minusculo", "size": 1, "residenceId": "b", "jobId": "z1w1"}]
-    alvo = (("SHP", "Loja Teste", [BASE_LNG + 0.01, BASE_LAT + 0.01], 10),)
-    pois.capture(points, pops, load_zones(zones_shp), alvo)
-    assert next(p for p in pops if p["id"] == "minusculo")["jobId"] == "z1w1"
+    configure(pois, poi_max_zone_share=0.01, min_pop_size=1)
+    points, pops = demand(sizes=(1000, 1))
+    pois.capture(points, pops, load_zones(zones_shp),
+                 zone_cells(zone_weight=0.0, near_weight=100.0), [poi("SHP", "Loja")])
+    assert any(p["jobId"] == "z1w1" for p in pops)
+
+
+def test_classify_cria_destino_quando_um_ponto_serve_dois_motivos():
+    """Zona com um único candidato para dois motivos: só criando um destino a mais."""
+    points, pops = classify_case([HEALTH])
+    pops.append({"id": "lazer", "size": 90, "residenceId": "z1h1", "jobId": "z1w0",
+                 ACTIVITY_FIELD: LEISURE})
+    pois.classify(points, pops, {1: cells((7, 7, 0.0, 80.0))})
+    tipos = {p.get("type") for p in points if p.get("type")}
+    assert {"HOS", "PRK"} <= tipos
+    assert any(p["id"].startswith("PRK_z") or p["id"].startswith("HOS_z") for p in points)
+
+
+def test_classify_sem_celulas_nao_cria_destino():
+    points, pops = classify_case([HEALTH])
+    pops.append({"id": "lazer", "size": 90, "residenceId": "z1h1", "jobId": "z1w0",
+                 ACTIVITY_FIELD: LEISURE})
+    antes = len(points)
+    pois.classify(points, pops, {})
+    assert len(points) == antes
+
+
+def test_spare_protege_o_unico_ponto_de_um_tipo():
+    ponto = {"id": "z1w0", "type": "HOS"}
+    outro = {"id": "z1w1", "type": "HOS"}
+    assert pois._spare({"id": "z1w9"}, 1, [ponto]) is True, "sem tipo, pode ser usado"
+    assert pois._spare(ponto, 1, [ponto]) is False, "é a única cobertura do tipo"
+    assert pois._spare(ponto, 1, [ponto, outro]) is True, "há outro do mesmo tipo"
+
+
+def test_classify_retipa_um_ponto_livre_quando_existe():
+    """Havendo candidato sobrando, cobre o motivo sem precisar criar destino."""
+    points, pops = classify_case([HEALTH, HEALTH])
+    pops.append({"id": "lazer", "size": 5, "residenceId": "z1h1", "jobId": "z1w1",
+                 ACTIVITY_FIELD: LEISURE})
+    antes = len(points)
+    pois.classify(points, pops, {1: cells((7, 7, 0.0, 80.0))})
+    assert len(points) == antes, "não cria destino quando dá para retipar"
+    assert {"HOS", "PRK"} <= {p.get("type") for p in points if p.get("type")}
+
+
+def test_new_destination_sem_pops_do_motivo():
+    points = [{"id": "z1w0", "location": [BASE_LNG, BASE_LAT], "jobs": 10, "residents": 0}]
+    pops = [{"id": "p", "size": 10, "residenceId": "z1h1", "jobId": "z1w0",
+             ACTIVITY_FIELD: WORK}]
+    assert pois._new_destination(points, pops, 1, HEALTH, "HOS",
+                                 {1: cells((1, 1, 0.0, 5.0))}) is None

@@ -30,7 +30,9 @@ def test_accumulate_classifica_pelo_destino_declarado():
     ]
     survey = od.accumulate_od(records, {1, 2})
     assert survey.population == {1: 150.0, 2: 30.0}
-    assert survey.totals() == {"work": 100.0, "school": 50.0, "other": 30.0}
+    assert survey.totals()["work"] == 100.0
+    assert survey.totals()["school"] == 50.0
+    assert survey.totals()["personal"] == 30.0, "sem viagem registrada, cai em pessoais"
     assert survey.flows["work"] == {(1, 2): 100.0}
     assert survey.flows["school"] == {(1, 2): 50.0}
 
@@ -38,13 +40,14 @@ def test_accumulate_classifica_pelo_destino_declarado():
 def test_accumulate_trata_zero_como_ausencia():
     """A pesquisa preenche 0 em ZONATRA1/ZONA_ESC para quem não trabalha nem estuda."""
     survey = od.accumulate_od([person(1, 1, 1, 80.0, 1, work=0, school=0)], {1})
-    assert survey.totals()["other"] == 80.0
+    assert survey.totals()["personal"] == 80.0
     assert survey.flows["work"] == {}
 
 
 def test_accumulate_prefere_trabalho_a_escola():
     survey = od.accumulate_od([person(1, 1, 1, 90.0, 1, work=2, school=1)], {1, 2})
-    assert survey.totals() == {"work": 90.0, "school": 0.0, "other": 0.0}
+    assert survey.totals()["work"] == 90.0
+    assert survey.totals()["school"] == 0.0
 
 
 def test_accumulate_separa_destino_fora_das_zonas():
@@ -59,14 +62,25 @@ def test_accumulate_usa_as_viagens_para_os_motivos_nao_pendulares():
     trip = person(1, 1, 1, 10.0, 1)
     trip.update({"MOTIVO_D": 5, "ZONA_O": 1, "ZONA_D": 2, "FE_VIA": 400.0})
     survey = od.accumulate_od([trip], {1, 2})
-    assert survey.flows["other"] == {(1, 2): 400.0}
+    assert survey.flows["shopping"] == {(1, 2): 400.0}
+    assert survey.totals()["shopping"] == 10.0, "o morador segue o motivo que ele mesmo gera"
+
+
+def test_accumulate_separa_cada_motivo_do_dicionario_oficial():
+    """5 Compras, 6 Saúde, 7 Lazer, 10 Assuntos Pessoais, 11 Refeição."""
+    for motive, activity in ((5, "shopping"), (6, "health"), (7, "leisure"),
+                             (10, "personal"), (11, "shopping")):
+        trip = person(1, 1, 1, 1.0, 1)
+        trip.update({"MOTIVO_D": motive, "ZONA_O": 1, "ZONA_D": 2, "FE_VIA": 50.0})
+        survey = od.accumulate_od([trip], {1, 2})
+        assert survey.flows[activity] == {(1, 2): 50.0}, f"motivo {motive}"
 
 
 def test_accumulate_ignora_motivo_de_volta_para_casa():
     trip = person(1, 1, 1, 10.0, 1)
     trip.update({"MOTIVO_D": 8, "ZONA_O": 1, "ZONA_D": 2, "FE_VIA": 999.0})
     survey = od.accumulate_od([trip], {1, 2})
-    assert survey.flows["other"] == {}
+    assert all(not survey.flows[a] for a in od.FLOATING)
 
 
 def test_accumulate_deduplica_pessoa_repetida():
@@ -155,6 +169,6 @@ def test_demand_by_zone_ignora_origem_sem_pessoas_na_atividade():
     trip = person(1, 1, 1, 50.0, 1, work=2)
     trip.update({"MOTIVO_D": 5, "ZONA_O": 1, "ZONA_D": 2, "FE_VIA": 900.0})
     survey = od.accumulate_od([trip], {1, 2})
-    assert survey.flows["other"] == {(1, 2): 900.0}
-    assert survey.activity[1]["other"] == 0.0
+    assert survey.flows["shopping"] == {(1, 2): 900.0}
+    assert survey.activity[1]["shopping"] == 0.0
     assert od.demand_by_zone(survey)[2][1] == pytest.approx(50.0), "só o fluxo de trabalho"

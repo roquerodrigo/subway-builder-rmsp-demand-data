@@ -27,6 +27,8 @@ from demand_data.od import ACTIVITIES
 log = logging.getLogger(__name__)
 
 _NUDGE = 1e-5  # ~1 m: separa coordenada duplicada (fallback raro)
+# motivo da viagem, carregado até a etapa dos equipamentos e removido na escrita
+ACTIVITY_FIELD = "_activity"
 
 
 def _largest_remainder(weights, total: int) -> list[int]:
@@ -190,8 +192,10 @@ def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
         shares = survey.activity.get(zone, {})
         by_activity = _largest_remainder([shares.get(name, 0.0) for name in ACTIVITIES], P)
 
-        plans: list[tuple[str, int, int]] = []  # (destino, nº de pops, pessoas)
-        outside: list[tuple[str, int, int]] = []
+        # (destino, nº de pops, pessoas, motivo) — o motivo tem de viajar junto: ele decide
+        # quais equipamentos podem receber esse pop mais adiante
+        plans: list[tuple[str, int, int, str]] = []
+        outside: list[tuple[str, int, int, str]] = []
         for name, people in zip(ACTIVITIES, by_activity, strict=True):
             if people <= 0:
                 continue
@@ -202,7 +206,7 @@ def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
             leaving = round(people * away / declared) if declared > 0 else 0
             if leaving > 0:
                 outside.append(
-                    (gateway(zone), max(1, round(leaving / target_size)), leaving)
+                    (gateway(zone), max(1, round(leaving / target_size)), leaving, name)
                 )
                 people -= leaving
             if people <= 0:
@@ -212,15 +216,15 @@ def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
             if settings.dest_cap > 0:
                 dests = dests[: settings.dest_cap]
             dests = [(wz, f) for wz, f in dests if work_src(wz) is not None] or [(zone, 1.0)]
-            plans += [(str(wz), k, ppl) for wz, k, ppl in
+            plans += [(str(wz), k, ppl, name) for wz, k, ppl in
                       _plan_destinations(dests, people, target_size)]
         plans += outside
         if not plans:
             continue
 
-        h_idx = _alloc(len(hc), sum(k for _, k, _ in plans), rng)
+        h_idx = _alloc(len(hc), sum(k for _, k, _, _ in plans), rng)
         i = 0
-        for target, k, people in plans:
+        for target, k, people, activity in plans:
             if target.startswith("EXT_"):
                 key = None
             else:
@@ -235,7 +239,8 @@ def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
                 seq += 1
                 pops.append({"id": f"p{seq:06d}", "size": int(sz), "residenceId": rid,
                              "jobId": target if key is None else "",
-                             "drivingSeconds": 0, "drivingDistance": 0})
+                             "drivingSeconds": 0, "drivingDistance": 0,
+                             ACTIVITY_FIELD: activity})
                 if key is not None:
                     pending[key].append(len(pops) - 1)
 
@@ -262,9 +267,11 @@ def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
 def merge_identical_commutes(pops: list[dict]) -> list[dict]:
     """Funde pops que ligam exatamente o mesmo par casa-trabalho — no jogo eles seriam a
     mesma viagem repetida, e cada um custa uma entrada no arquivo."""
-    merged: dict[tuple[str, str], dict] = {}
+    merged: dict[tuple, dict] = {}
     for pop in pops:
-        key = (pop["residenceId"], pop["jobId"])
+        # o motivo entra na chave: dois pops do mesmo par por motivos diferentes viram
+        # destinos diferentes quando os equipamentos entram
+        key = (pop["residenceId"], pop["jobId"], pop.get(ACTIVITY_FIELD))
         first = merged.get(key)
         if first is None:
             merged[key] = pop

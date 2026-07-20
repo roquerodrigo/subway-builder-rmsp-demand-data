@@ -341,8 +341,8 @@ def select_candidates(
 
 def zone_candidates(
     cnefe: Path, zones_shp: Path, weights: dict[str, float], demand: dict[int, tuple[float, float]]
-) -> tuple[Candidates, Candidates]:
-    """(casa, trabalho): pontos sorteados entre os endereços da zona ∝ densidade.
+) -> tuple[Candidates, Candidates, dict]:
+    """(casa, trabalho, células por zona): pontos sorteados entre os endereços ∝ densidade.
 
     Cada zona recebe ``demanda / people_per_point`` pontos de cada tipo, em células sorteadas
     ∝ peso residencial (casa) ou de emprego (trabalho) de ``demand``
@@ -372,4 +372,4 @@ def zone_candidates(
         len(by_zone), settings.people_per_point,
         settings.density_cell * settings.m_per_deg_lat, short,
     )
-    return home_out, work_out
+    return home_out, work_out, by_zone

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import ssl
 import urllib.error
@@ -596,11 +597,11 @@ def test_lotes_asks_the_configured_layer(tmp_path, configure, monkeypatch):
 def test_acquire_runs_every_step_after_creating_the_directory(tmp_path, configure, monkeypatch):
     settings = configure(sources, sources_dir=tmp_path / "fontes")
     order: list[str] = []
-    for step in ("od", "cnefe", "censo", "lotes"):
+    for step in ("od", "cnefe", "censo", "lotes", "pois"):
         monkeypatch.setattr(sources, step, lambda step=step: order.append(step))
     sources.acquire()
     assert settings.sources_dir.is_dir()
-    assert order == ["od", "cnefe", "censo", "lotes"]
+    assert order == ["od", "cnefe", "censo", "lotes", "pois"]
 
 
 def test_download_is_reachable_through_the_public_steps(tmp_path, configure, monkeypatch):
@@ -628,3 +629,60 @@ def test_download_logs_that_the_file_already_exists(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger="demand_data.sources"):
         sources._download("https://exemplo/arquivo.zip", dest)
     assert "já baixado" in caplog.text
+
+
+def test_parse_overpass_ignora_elemento_incompleto(configure):
+    configure(sources)
+    elementos = [
+        {"id": 1, "tags": {"name": ""}, "lat": -23.5, "lon": -46.6},
+        {"id": 2, "tags": {"name": "Sem coordenada"}},
+        {"id": 3, "tags": {"name": "Fora"}, "lat": -20.0, "lon": -40.0},
+    ]
+    codes = {id(e): "AIR" for e in elementos}
+    assert list(sources.parse_overpass(elementos, codes)) == []
+
+
+def test_parse_overpass_usa_o_centro_e_deduplica(configure):
+    configure(sources)
+    elemento = {"id": 7, "tags": {"name": "Aeroporto X"}, "center": {"lat": -23.5, "lon": -46.6}}
+    codes = {id(elemento): "AIR"}
+    linhas = list(sources.parse_overpass([elemento, elemento], codes))
+    assert linhas == ["-46.6,-23.5,AIR,7,Aeroporto X\n"]
+
+
+def test_code_for_reconhece_os_tipos():
+    assert sources._code_for({"aeroway": "aerodrome"}) == "AIR"
+    assert sources._code_for({"amenity": "hospital"}) == "HOS"
+    assert sources._code_for({"leisure": "park"}) == "PRK"
+    assert sources._code_for({"amenity": "cafe"}) is None
+
+
+def test_pois_pula_quando_ja_existe(configure, tmp_path, caplog):
+    settings = configure(sources, sources_dir=tmp_path)
+    settings.pois_csv.write_text("-46.6,-23.5,AIR,1,X\n", encoding="utf-8")
+    with caplog.at_level("INFO"):
+        sources.pois()
+    assert "já processado" in caplog.text
+
+
+def test_overpass_query_cobre_o_recorte_e_os_tipos(configure):
+    configure(sources, bbox=(-47.0, -24.0, -45.0, -23.0))
+    query = sources._overpass_query()
+    assert "(-24.0,-47.0,-23.0,-45.0)" in query
+    assert query.count("nwr") == len(sources.POI_QUERIES)
+    assert query.startswith("[out:json]") and query.rstrip().endswith("out center tags;")
+
+
+def test_pois_baixa_e_escreve_o_csv(configure, tmp_path, monkeypatch):
+    settings = configure(sources, sources_dir=tmp_path, bbox=(-47.0, -24.0, -45.0, -23.0))
+    payload = {"elements": [
+        {"id": 1, "tags": {"aeroway": "aerodrome", "name": "Aeroporto X"},
+         "lat": -23.5, "lon": -46.6},
+        {"id": 2, "tags": {"amenity": "cafe", "name": "Café"}, "lat": -23.5, "lon": -46.6},
+    ]}
+    monkeypatch.setattr(
+        sources.urllib.request, "urlopen",
+        lambda *a, **k: FakeResponse(json.dumps(payload).encode()),
+    )
+    sources.pois()
+    assert settings.pois_csv.read_text(encoding="utf-8") == "-46.6,-23.5,AIR,1,Aeroporto X\n"
