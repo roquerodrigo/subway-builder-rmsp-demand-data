@@ -647,7 +647,7 @@ def test_parse_overpass_usa_o_centro_e_deduplica(configure):
     elemento = {"id": 7, "tags": {"name": "Aeroporto X"}, "center": {"lat": -23.5, "lon": -46.6}}
     codes = {id(elemento): "AIR"}
     linhas = list(sources.parse_overpass([elemento, elemento], codes))
-    assert linhas == ["-46.6,-23.5,AIR,7,Aeroporto X\n"]
+    assert linhas == ["-46.6,-23.5,AIR,7,0.0,0.0,0.0,0.0,Aeroporto X\n"]
 
 
 def test_code_for_reconhece_os_tipos():
@@ -670,7 +670,8 @@ def test_overpass_query_cobre_o_recorte_e_os_tipos(configure):
     query = sources._overpass_query()
     assert "(-24.0,-47.0,-23.0,-45.0)" in query
     assert query.count("nwr") == len(sources.POI_QUERIES)
-    assert query.startswith("[out:json]") and query.rstrip().endswith("out center tags;")
+    assert query.startswith("[out:json]")
+    assert query.rstrip().endswith("out center bb tags;")
 
 
 def test_pois_baixa_e_escreve_o_csv(configure, tmp_path, monkeypatch):
@@ -685,4 +686,16 @@ def test_pois_baixa_e_escreve_o_csv(configure, tmp_path, monkeypatch):
         lambda *a, **k: FakeResponse(json.dumps(payload).encode()),
     )
     sources.pois()
-    assert settings.pois_csv.read_text(encoding="utf-8") == "-46.6,-23.5,AIR,1,Aeroporto X\n"
+    assert settings.pois_csv.read_text(encoding="utf-8") == (
+        "-46.6,-23.5,AIR,1,0.0,0.0,0.0,0.0,Aeroporto X\n")
+
+
+def test_parse_overpass_deriva_o_centro_da_extensao(configure):
+    """Com "bb" o Overpass deixa de mandar o centro dos ways; ele sai dos limites."""
+    configure(sources)
+    elemento = {"id": 5, "type": "way", "tags": {"name": "Parque Y"},
+                "bounds": {"minlon": -46.62, "minlat": -23.52,
+                           "maxlon": -46.60, "maxlat": -23.50}}
+    codes = {id(elemento): "PRK"}
+    linha = next(iter(sources.parse_overpass([elemento], codes)))
+    assert linha.startswith("-46.61,-23.51,PRK,5,-46.62,-23.52,-46.6,-23.5,")

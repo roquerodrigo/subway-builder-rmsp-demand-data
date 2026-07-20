@@ -11,8 +11,11 @@ from demand_data.pops import ACTIVITY_FIELD
 
 
 def poi(type_code, name, dx=0.01, dy=0.01, osm_id="1"):
-    return {"location": [BASE_LNG + dx, BASE_LAT + dy], "type": type_code,
-            "osm_id": osm_id, "name": name}
+    """Equipamento cobrindo a célula vizinha da fixture de células."""
+    return {"location": [BASE_LNG + dx, BASE_LAT + dy], "type": type_code, "osm_id": osm_id,
+            "extent": [BASE_LNG + dx - 0.0006, BASE_LAT + dy - 0.0006,
+                       BASE_LNG + dx + 0.0006, BASE_LAT + dy + 0.0006],
+            "name": name}
 
 
 def zone_cells(zone_weight=100.0, near_weight=100.0):
@@ -34,11 +37,12 @@ def demand(sizes=(200, 150, 150), activity=WORK):
 
 def test_load_le_o_csv_do_openstreetmap(tmp_path):
     path = tmp_path / "pois.csv"
-    path.write_text("-46.6,-23.5,AIR,123,Aeroporto Um\n"
+    path.write_text("-46.6,-23.5,AIR,123,-46.61,-23.51,-46.59,-23.49,Aeroporto Um\n"
                     "linha ruim\n"
-                    "x,y,UNI,9,Sem coordenada\n", encoding="utf-8")
-    assert pois.load(path) == [{"location": [-46.6, -23.5], "type": "AIR",
-                               "osm_id": "123", "name": "Aeroporto Um"}]
+                    "x,y,UNI,9,0,0,0,0,Sem coordenada\n", encoding="utf-8")
+    assert pois.load(path) == [{"location": [-46.6, -23.5], "type": "AIR", "osm_id": "123",
+                               "extent": [-46.61, -23.51, -46.59, -23.49],
+                               "name": "Aeroporto Um"}]
 
 
 def test_load_sem_arquivo_avisa(tmp_path, caplog):
@@ -281,3 +285,91 @@ def test_new_destination_sem_pops_do_motivo():
              ACTIVITY_FIELD: WORK}]
     assert pois._new_destination(points, pops, 1, HEALTH, "HOS",
                                  {1: cells((1, 1, 0.0, 5.0))}) is None
+
+
+def test_footprint_usa_a_extensao_do_osm(configure):
+    """Medir num raio fixo fazia uma praça pequena herdar o quarteirão inteiro."""
+    configure(pois, poi_radius_m=0.0)
+    grande = {"location": [BASE_LNG, BASE_LAT],
+              "extent": [BASE_LNG - 0.01, BASE_LAT - 0.01, BASE_LNG + 0.01, BASE_LAT + 0.01]}
+    pequeno = {"location": [BASE_LNG, BASE_LAT],
+               "extent": [BASE_LNG - 0.0001, BASE_LAT - 0.0001,
+                          BASE_LNG + 0.0001, BASE_LAT + 0.0001]}
+    largura = lambda p: pois.footprint(p)[2] - pois.footprint(p)[0]  # noqa: E731
+    assert largura(grande) > largura(pequeno) * 50
+
+
+def test_footprint_cai_no_raio_minimo_sem_geometria(configure):
+    configure(pois, poi_radius_m=100.0)
+    node = {"location": [BASE_LNG, BASE_LAT], "extent": [0.0, 0.0, 0.0, 0.0]}
+    min_lng, min_lat, max_lng, max_lat = pois.footprint(node)
+    assert max_lng > min_lng and max_lat > min_lat
+    assert (max_lng - min_lng) * 101900 == pytest.approx(200, rel=0.05)
+
+
+def test_measure_so_conta_a_atividade_dentro_do_equipamento(configure):
+    """A célula distante não entra no porte, mesmo estando na mesma zona."""
+    configure(pois, poi_radius_m=0.0)
+    perto = BASE_LNG + 0.010
+    poi_pequeno = {"zone": 1, "location": [perto, BASE_LAT + 0.010],
+                   "extent": [perto - 0.0005, BASE_LAT + 0.0095,
+                              perto + 0.0005, BASE_LAT + 0.0105]}
+    pois.measure([poi_pequeno], zone_cells(zone_weight=300.0, near_weight=100.0))
+    assert poi_pequeno["share"] == pytest.approx(0.25)
+
+
+def crowded_case(sizes, activity=HEALTH):
+    points = [{"id": "z1h1", "location": [BASE_LNG, BASE_LAT], "jobs": 0, "residents": 10}]
+    pops = []
+    for index, size in enumerate(sizes):
+        points.append({"id": f"z1w{index}", "location": [BASE_LNG + 0.001 * index, BASE_LAT],
+                       "jobs": size, "residents": 0})
+        pops.append({"id": f"p{index}", "size": size, "residenceId": "z1h1",
+                     "jobId": "z1w0", ACTIVITY_FIELD: activity})
+    return points, pops
+
+
+def test_classify_espalha_quando_um_destino_concentra_demais(configure):
+    """Um poço de demanda é atendido ou não em bloco pela rede."""
+    configure(pois, poi_spread_above=1000.0)
+    points, pops = crowded_case([900, 800, 700])
+    pois.classify(points, pops, {})
+    destinos = {p["jobId"] for p in pops}
+    assert len(destinos) > 1, "a demanda não pode ficar toda num ponto"
+    assert all(next(pt for pt in points if pt["id"] == d).get("type") == "HOS"
+               for d in destinos)
+
+
+def test_classify_nao_espalha_dentro_do_teto(configure):
+    configure(pois, poi_spread_above=10000.0)
+    points, pops = crowded_case([900, 800])
+    pois.classify(points, pops, {})
+    assert {p["jobId"] for p in pops} == {"z1w0"}
+
+
+def test_classify_com_teto_desligado(configure):
+    configure(pois, poi_spread_above=0.0)
+    points, pops = crowded_case([5000, 5000])
+    pois.classify(points, pops, {})
+    assert {p["jobId"] for p in pops} == {"z1w0"}
+
+
+def test_classify_para_de_espalhar_ao_alcancar_o_teto(configure):
+    """A migração para quando o ponto original cabe no teto — não esvazia o destino."""
+    configure(pois, poi_spread_above=1000.0)
+    points, pops = crowded_case([600, 500, 400, 300])
+    pois.classify(points, pops, {})
+    no_original = sum(p["size"] for p in pops if p["jobId"] == "z1w0")
+    assert 0 < no_original <= 1000
+
+
+def test_classify_sem_outro_ponto_na_zona_nao_espalha(configure):
+    configure(pois, poi_spread_above=100.0)
+    points = [{"id": "z1h1", "location": [BASE_LNG, BASE_LAT], "jobs": 0, "residents": 10},
+              {"id": "z1w0", "location": [BASE_LNG, BASE_LAT], "jobs": 900, "residents": 0}]
+    pops = [{"id": "p0", "size": 500, "residenceId": "z1h1", "jobId": "z1w0",
+             ACTIVITY_FIELD: HEALTH},
+            {"id": "p1", "size": 400, "residenceId": "z1h1", "jobId": "z1w0",
+             ACTIVITY_FIELD: HEALTH}]
+    pois.classify(points, pops, {})
+    assert {p["jobId"] for p in pops} == {"z1w0"}, "sem para onde mandar, fica onde está"

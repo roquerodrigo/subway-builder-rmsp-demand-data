@@ -20,7 +20,6 @@ fonte americana só traz casa-trabalho.
 from __future__ import annotations
 
 import logging
-import math
 import re
 from pathlib import Path
 
@@ -30,7 +29,8 @@ from demand_data.pops import ACTIVITY_FIELD
 
 log = logging.getLogger(__name__)
 
-_ZONE_POINT = re.compile(r"^z(\d+)(?:hf|wf|h|w)\d+$")
+_ZONE_POINT = re.compile(r"^z(\d+)(hf|wf|h|w)\d+$")
+_WORK_PREFIXES = frozenset({"w", "wf"})
 _WORK_WEIGHT = 1  # índice do peso de emprego nos acumuladores de densidade
 # zona do equipamento: serve à geração, não ao jogo, e sai na escrita
 ZONE_FIELD = "_zone"
@@ -65,7 +65,7 @@ def _identifier(name: str) -> str:
 
 
 def load(path: Path | None = None) -> list[dict]:
-    """Lê ``pois.csv`` (``lng,lat,tipo,osm_id,nome``) escrito pelo comando ``sources``."""
+    """Lê ``pois.csv`` (``lng,lat,tipo,osm_id,extensão…,nome``) escrito por ``sources``."""
     path = path or settings.pois_csv
     if not path.exists():
         log.warning("sem %s — rode `sources` para baixar os equipamentos", path.name)
@@ -73,15 +73,16 @@ def load(path: Path | None = None) -> list[dict]:
     found = []
     with open(path, encoding="utf-8") as f:
         for line in f:
-            parts = line.rstrip("\n").split(",", 4)
-            if len(parts) != 5:
+            parts = line.rstrip("\n").split(",", 8)
+            if len(parts) != 9:
                 continue
             try:
                 lng, lat = float(parts[0]), float(parts[1])
+                extent = [float(v) for v in parts[4:8]]
             except ValueError:
                 continue
-            found.append({"location": [lng, lat], "type": parts[2],
-                          "osm_id": parts[3], "name": parts[4]})
+            found.append({"location": [lng, lat], "type": parts[2], "osm_id": parts[3],
+                          "extent": extent, "name": parts[8]})
     return found
 
 
@@ -97,28 +98,39 @@ def locate(zones, catalogue: list[dict]) -> list[dict]:
     return located
 
 
+def footprint(poi: dict) -> tuple[float, float, float, float]:
+    """Retângulo em que o equipamento é medido: a extensão do OSM, com uma folga mínima.
+
+    Medir num raio fixo fazia uma praça de 40 m herdar os prédios de todo o quarteirão.
+    """
+    margin = settings.poi_radius_m
+    lng, lat = poi["location"]
+    dx = margin / settings.m_per_deg_lng
+    dy = margin / settings.m_per_deg_lat
+    min_lng, min_lat, max_lng, max_lat = poi.get("extent") or [0.0, 0.0, 0.0, 0.0]
+    if max_lng <= min_lng or max_lat <= min_lat:  # nó solto, sem geometria no OSM
+        return (lng - dx, lat - dy, lng + dx, lat + dy)
+    return (min_lng - dx, min_lat - dy, max_lng + dx, max_lat + dy)
+
+
 def measure(located: list[dict], cells_by_zone: dict) -> None:
-    """Mede o peso de cada equipamento: atividade não-residencial no entorno / a da zona.
+    """Mede o peso de cada equipamento: atividade não-residencial dentro dele / a da zona.
 
     É o que substitui uma capacidade declarada — o porte sai da mesma fonte que decide onde
     ficam os pontos de trabalho.
     """
-    radius = settings.poi_radius_m
-    lat_scale, lng_scale = settings.m_per_deg_lat, settings.m_per_deg_lng
     for poi in located:
         cells = cells_by_zone.get(poi["zone"], {})
-        lng, lat = poi["location"]
-        nearby = total = 0.0
+        min_lng, min_lat, max_lng, max_lat = footprint(poi)
+        inside = total = 0.0
         for values in cells.values():
             weight = values[_WORK_WEIGHT]
             if weight <= 0:
                 continue
             total += weight
-            dx = (values[6] - lng) * lng_scale
-            dy = (values[7] - lat) * lat_scale
-            if math.hypot(dx, dy) <= radius:
-                nearby += weight
-        poi["share"] = nearby / total if total > 0 else 0.0
+            if min_lng <= values[6] <= max_lng and min_lat <= values[7] <= max_lat:
+                inside += weight
+        poi["share"] = inside / total if total > 0 else 0.0
 
 
 def capture(points: list[dict], pops: list[dict], zones, cells_by_zone: dict,
@@ -272,12 +284,72 @@ def classify(points: list[dict], pops: list[dict], cells_by_zone: dict) -> dict[
         counts[type_code] = counts.get(type_code, 0) + 1
         forced += 1
 
+    spread = _spread_crowded(points, pops, counts)
     missing = _uncovered(points, pops)
-    log.info("destinos tipados pelo motivo da viagem: %s (%d ajustados para cobrir a zona)",
-             ", ".join(f"{n} {c}" for c, n in sorted(counts.items())), forced)
+    log.info("destinos tipados pelo motivo da viagem: %s "
+             "(%d ajustados para cobrir a zona, %d para aliviar concentração)",
+             ", ".join(f"{n} {c}" for c, n in sorted(counts.items())), forced, spread)
     if missing:
         log.warning("zonas recebendo um motivo sem destino do tipo: %d", missing)
     return counts
+
+
+def _spread_crowded(points: list[dict], pops: list[dict], counts: dict[str, int]) -> int:
+    """Reparte a demanda de um motivo quando um único destino concentra demais.
+
+    Um destino de saúde com dezenas de milhares de pessoas vira um poço que a rede atende ou
+    não atende em bloco. Os pops excedentes passam para outros pontos da mesma zona, que
+    ganham o mesmo tipo — a zona fica com vários destinos daquele motivo em vez de um só.
+    """
+    ceiling = settings.poi_spread_above
+    if ceiling <= 0:
+        return 0
+
+    zone_of, by_zone = {}, {}
+    for point in points:
+        match = _ZONE_POINT.match(point["id"])
+        if match and not point.get("name"):
+            zone = int(match.group(1))
+            zone_of[point["id"]] = zone
+            # só destinos: mandar demanda para um ponto de moradia faria dele casa e
+            # trabalho ao mesmo tempo
+            if match.group(2) in _WORK_PREFIXES:
+                by_zone.setdefault(zone, []).append(point)
+
+    crowded: dict[tuple[str, str], list[dict]] = {}
+    for pop in pops:
+        activity = pop.get(ACTIVITY_FIELD)
+        if activity in REQUIRED_BY_ACTIVITY and pop["jobId"] in zone_of:
+            crowded.setdefault((pop["jobId"], activity), []).append(pop)
+
+    points_by_id = {p["id"]: p for p in points}
+    promoted = 0
+    for (point_id, activity), group in sorted(crowded.items()):
+        people = sum(p["size"] for p in group)
+        type_code = REQUIRED_BY_ACTIVITY[activity][0]
+        if people <= ceiling or points_by_id[point_id].get("type") != type_code:
+            continue
+        zone = zone_of[point_id]
+        wanted = min(int(people / ceiling), len(group) - 1)
+        helpers = [other for other in by_zone.get(zone, [])
+                   if other["id"] != point_id
+                   and (other.get("type") in (None, type_code)
+                        or _spare(other, zone, points))]
+        helpers = helpers[:wanted]
+        if not helpers:
+            continue
+        # os maiores pops ficam onde estão; os menores migram, um por destino novo
+        group.sort(key=lambda p: -p["size"])
+        for index, pop in enumerate(group[1:], start=0):
+            helper = helpers[index % len(helpers)]
+            if sum(p["size"] for p in group if p["jobId"] == point_id) <= ceiling:
+                break
+            pop["jobId"] = helper["id"]
+            if helper.get("type") != type_code:
+                helper["type"] = type_code
+                counts[type_code] = counts.get(type_code, 0) + 1
+                promoted += 1
+    return promoted
 
 
 def _new_destination(points, pops, zone: int, activity: str, type_code: str, cells_by_zone):

@@ -271,17 +271,22 @@ POI_QUERIES: tuple[tuple[str, str], ...] = (
 
 
 def parse_overpass(elements, codes: dict[int, str]):
-    """Elementos do Overpass -> ``lng,lat,tipo,osm_id,nome``.
+    """Elementos do Overpass -> ``lng,lat,tipo,osm_id,min_lng,min_lat,max_lng,max_lat,nome``.
 
-    O nome é o que aparece no mapa; ``osm_id`` deixa cada equipamento rastreável até o
-    OpenStreetMap, que é o motivo de não haver coordenada escrita à mão aqui.
+    A extensão vem junto porque o porte do equipamento é medido dentro dela: um raio fixo
+    faria uma pracinha de esquina herdar os prédios do quarteirão inteiro. Elementos sem
+    geometria (nós soltos) saem com a extensão zerada e caem no raio mínimo.
     """
     seen = set()
     for element in elements:
         tags = element.get("tags") or {}
         name = (tags.get("name") or "").strip().replace(",", " ")
+        b = element.get("bounds") or {}
         center = element.get("center") or element
         lng, lat = center.get("lon"), center.get("lat")
+        if lng is None and b:  # com "bb" o Overpass deixa de mandar o centro dos ways
+            lng = (b["minlon"] + b["maxlon"]) / 2
+            lat = (b["minlat"] + b["maxlat"]) / 2
         code = codes.get(id(element)) or tags.get("_code")
         if not name or lng is None or lat is None or not code:
             continue
@@ -289,14 +294,18 @@ def parse_overpass(elements, codes: dict[int, str]):
         if key in seen or not settings.in_bbox(float(lng), float(lat)):
             continue
         seen.add(key)
-        yield f"{round(float(lng), 6)},{round(float(lat), 6)},{code},{element.get('id')},{name}\n"
+        extent = [b.get("minlon", 0.0), b.get("minlat", 0.0),
+                  b.get("maxlon", 0.0), b.get("maxlat", 0.0)]
+        yield (f"{round(float(lng), 6)},{round(float(lat), 6)},{code},{element.get('id')},"
+               + ",".join(f"{round(float(v), 6)}" for v in extent)
+               + f",{name}\n")
 
 
 def _overpass_query() -> str:
     b = settings.bbox
     bbox = f"{b[1]},{b[0]},{b[3]},{b[2]}"
     union = "".join(f"  nwr{filters}({bbox});\n" for _code, filters in POI_QUERIES)
-    return f"[out:json][timeout:180];\n(\n{union});\nout center tags;"
+    return f"[out:json][timeout:180];\n(\n{union});\nout center bb tags;"
 
 
 def _code_for(tags: dict) -> str | None:

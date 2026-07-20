@@ -55,8 +55,11 @@ class Settings:
     # fração máxima da demanda de uma zona que um equipamento pode capturar: nenhuma zona é
     # um equipamento só, e sem o teto os de capacidade alta levavam a zona inteira.
     poi_max_zone_share: float = _env_float("DEMAND_POI_MAX_ZONE_SHARE", 0.6)
-    # raio (m) em que se mede a atividade de um equipamento para saber o porte dele
-    poi_radius_m: float = _env_float("DEMAND_POI_RADIUS_M", 250.0)
+    # folga (m) somada à extensão do equipamento ao medir a atividade dele
+    poi_radius_m: float = _env_float("DEMAND_POI_MARGIN_M", 80.0)
+    # acima disso, o motivo ganha mais destinos do mesmo tipo na zona: um poço de demanda
+    # que a rede atende ou não atende em bloco não representa bem a cidade.
+    poi_spread_above: float = _env_float("DEMAND_POI_SPREAD_ABOVE", 2000.0)
     # destinos de trabalho por zona de origem (0 = todos). Não altera o total de pops.
     dest_cap: int = _env_int("DEMAND_DEST_CAP", 0)
     # tamanho mínimo de pop: limita nº de pops da zona a P/min_pop_size, fundindo os pops
