@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 import re
 
+from demand_data.config import settings
+
 log = logging.getLogger(__name__)
 
 _ZONE_POINT = re.compile(r"^z(\d+)(?:hf|wf|h|w)\d+$")
@@ -74,12 +76,33 @@ def locate(zones, catalogue=CATALOGUE) -> list[dict]:
     return located
 
 
-def capture(points: list[dict], pops: list[dict], zones, catalogue=CATALOGUE) -> list[dict]:
-    """Reetiqueta destinos genéricos como os equipamentos que os atraem.
+def _shares(sizes: list[int], total: int) -> list[int]:
+    """Reparte ``total`` entre os pops ∝ tamanho, preservando a soma."""
+    if total <= 0:
+        return [0] * len(sizes)
+    pool = sum(sizes)
+    raw = [size * total / pool for size in sizes]
+    out = [int(value) for value in raw]
+    remainder = total - sum(out)
+    for index in sorted(range(len(raw)), key=lambda i: raw[i] - out[i], reverse=True):
+        if remainder <= 0:
+            break
+        if out[index] < sizes[index]:
+            out[index] += 1
+            remainder -= 1
+    return out
 
-    Cada POI toma até ``capacity`` pessoas entre os pops que já chegam à sua zona, dos
-    maiores para os menores. Devolve os pontos criados; ``points`` e ``pops`` são alterados
-    no lugar.
+
+def capture(points: list[dict], pops: list[dict], zones, catalogue=CATALOGUE) -> list[dict]:
+    """Reetiqueta parte dos destinos genéricos como os equipamentos que os atraem.
+
+    Cada equipamento toma uma FATIA PROPORCIONAL de cada pop que chega à sua zona, até
+    ``capacity`` e até ``poi_max_zone_share`` da demanda ainda disponível ali. Tomar pops
+    inteiros, dos maiores para os menores, fazia o equipamento estourar a própria capacidade,
+    esvaziar a zona quando a capacidade era maior que ela, e herdar só as origens dos poucos
+    pops grandes que coubessem.
+
+    Devolve os pontos criados; ``points`` e ``pops`` são alterados no lugar.
     """
     located = locate(zones, catalogue)
     if not located:
@@ -96,33 +119,44 @@ def capture(points: list[dict], pops: list[dict], zones, catalogue=CATALOGUE) ->
         zone = zone_of_point.get(pop["jobId"])
         if zone is not None:
             arriving.setdefault(zone, []).append(pop)
-    for zone in arriving:
-        arriving[zone].sort(key=lambda p: -p["size"])
 
-    created = []
-    claimed: set[str] = set()  # dois equipamentos na mesma zona não disputam o mesmo pop
+    max_share = min(max(settings.poi_max_zone_share, 0.0), 1.0)
+    created, added = [], []
     for poi in located:
-        pool = arriving.get(poi["zone"], [])
-        point = {"id": poi["id"], "location": poi["location"], "name": poi["name"],
-                 "type": poi["type"], "jobs": 0, "residents": 0, "popIds": []}
-        taken = 0
-        for pop in pool:
-            if taken >= poi["capacity"]:
-                break
-            if pop["id"] in claimed:
-                continue
-            pop["jobId"] = poi["id"]
-            claimed.add(pop["id"])
-            taken += pop["size"]
-        if taken == 0:
+        # só a demanda que ainda vai para um ponto genérico da zona: o que outro equipamento
+        # da mesma zona já levou não está mais disponível
+        pool = [p for p in arriving.get(poi["zone"], [])
+                if zone_of_point.get(p["jobId"]) == poi["zone"] and p["size"] > 0]
+        available = sum(p["size"] for p in pool)
+        target = min(poi["capacity"], int(available * max_share))
+        if target <= 0:
             log.warning("sem demanda para capturar em %s (zona %d)", poi["name"], poi["zone"])
             continue
+        if poi["capacity"] > available * max_share:
+            log.info("  %s limitado pela zona: %d de %d pretendidos",
+                     poi["name"], target, poi["capacity"])
+
+        point = {"id": poi["id"], "location": poi["location"], "name": poi["name"],
+                 "type": poi["type"], "jobs": 0, "residents": 0, "popIds": []}
+        for pop, share in zip(pool, _shares([p["size"] for p in pool], target), strict=True):
+            if share <= 0:
+                continue
+            if share >= pop["size"]:
+                pop["jobId"] = poi["id"]
+                continue
+            slice_pop = dict(pop)
+            slice_pop["id"] = f"{pop['id']}@{len(added)}"
+            slice_pop["size"] = share
+            slice_pop["jobId"] = poi["id"]
+            pop["size"] -= share
+            added.append(slice_pop)
         points.append(point)
         created.append(point)
-        poi["captured"] = taken
+        poi["captured"] = target
 
+    pops.extend(added)
     log.info(
-        "POIs: %d equipamentos capturaram %d pessoas (de %d catalogados)",
-        len(created), sum(p.get("captured", 0) for p in located), len(catalogue),
+        "POIs: %d equipamentos capturaram %d pessoas (de %d catalogados), %d pops fatiados",
+        len(created), sum(p.get("captured", 0) for p in located), len(catalogue), len(added),
     )
     return created
