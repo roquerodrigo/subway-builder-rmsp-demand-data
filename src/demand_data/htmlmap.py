@@ -12,6 +12,7 @@ arquivo a dezenas de MB.
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 from datetime import datetime
@@ -22,28 +23,67 @@ log = logging.getLogger(__name__)
 _COORD_DECIMALS = 5  # ~1 m
 _ZONE_SIMPLIFY = 0.0008  # ~80 m: mantém o formato reconhecível e enxuga o GeoJSON
 
-# no load: o folium só escreve o JS do mapa (e do grupo) depois deste bloco
+# ordem em que as camadas aparecem no controle do mapa
+_LAYERS = (
+    ("home", "moradia"),
+    ("work", "trabalho"),
+    ("gateway", "conexões externas"),
+    ("poi", "equipamentos"),
+)
+
+# no load: o folium só escreve o JS do mapa (e dos grupos) depois deste bloco
 _MARKERS_JS = """
 window.addEventListener('load', function () {
     var points = %(points)s;
-    var group = %(group)s;
+    var groups = %(groups)s;
+    var map = %(map)s;
+    function label(p) {
+        return (p[5] || p[4]) + ': ' + p[2] + ' moram, ' + p[3] + ' trabalham';
+    }
     for (var i = 0; i < points.length; i++) {
         var p = points[i], residents = p[2], jobs = p[3], total = residents + jobs;
         var share = total > 0 ? residents / total : 0.5;
+        var kind = p[6];
+        if (kind === 'poi') {
+            L.marker([p[0], p[1]], {
+                icon: L.divIcon({
+                    className: 'poi-marker',
+                    html: '<i></i><span>' + p[5] + '</span>',
+                    iconSize: null
+                })
+            }).bindTooltip(label(p)).addTo(groups.poi);
+            continue;
+        }
         L.circleMarker([p[0], p[1]], {
             radius: Math.min(1.5 + Math.sqrt(total) / 40.0, 12),
-            color: total <= 0 ? '#888888'
+            color: kind === 'gateway' ? '#2f855a'
                  : share >= 0.6 ? '#2b6cb0'
                  : share <= 0.4 ? '#dd6b20' : '#6b46c1',
             fill: true, fillOpacity: 0.55, weight: 0
-        }).bindTooltip(p[4] + ': ' + residents + ' moram, ' + jobs + ' trabalham')
-          .addTo(group);
+        }).bindTooltip(label(p)).addTo(groups[kind]);
     }
+    // com a região inteira na tela os rótulos se sobrepõem e viram um borrão
+    function toggleLabels() {
+        document.body.classList.toggle('poi-labels', map.getZoom() >= 12);
+    }
+    map.on('zoomend', toggleLabels);
+    toggleLabels();
 });
 """
 
 _STAMP_CSS = """
 <style>
+.poi-marker i {
+    display: block; width: 11px; height: 11px; transform: translate(-50%, -50%) rotate(45deg);
+    background: #c53030; border: 1.5px solid #ffffff; box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+}
+.poi-marker span { display: none; }
+.poi-labels .poi-marker span {
+    display: inline-block; position: absolute; left: 9px; top: -9px;
+    font: 600 11px/1.2 system-ui, sans-serif; color: #1a202c; white-space: nowrap;
+    background: rgba(255, 255, 255, 0.92); border: 1px solid #a0aec0;
+    border-radius: 3px; padding: 2px 5px;
+}
 .demand-stamp {
     position: fixed; right: 12px; bottom: 22px; z-index: 9999;
     font: 12px/1.4 system-ui, sans-serif; color: #2d3748;
@@ -72,12 +112,22 @@ def _zone_outlines(zones) -> dict:
     return {"type": "FeatureCollection", "features": features}
 
 
+def _kind(point: dict) -> str:
+    """Camada do ponto: equipamento nomeado, conexão externa, moradia ou trabalho."""
+    if point.get("name"):
+        return "poi"
+    if point["id"].startswith("EXT_"):
+        return "gateway"
+    return "home" if point.get("residents", 0) >= point.get("jobs", 0) else "work"
+
+
 def _point_rows(points: list[dict]) -> list:
     rows = []
     for p in points:
         lng, lat = p["location"]
         rows.append([round(lat, _COORD_DECIMALS), round(lng, _COORD_DECIMALS),
-                     p.get("residents", 0), p.get("jobs", 0), p["id"]])
+                     p.get("residents", 0), p.get("jobs", 0), p["id"],
+                     p.get("name", ""), _kind(p)])
     return rows
 
 
@@ -98,12 +148,18 @@ def write(points: list[dict], center: tuple[float, float], path: Path, zones=Non
             tooltip=folium.GeoJsonTooltip(fields=["zona"], aliases=["zona OD:"]),
         ).add_to(m)
 
-    group = folium.FeatureGroup(name="pontos de demanda")
-    group.add_to(m)
+    rows = _point_rows(points)
+    counts = collections.Counter(row[6] for row in rows)
+    groups = {}
+    for kind, label in _LAYERS:
+        group = folium.FeatureGroup(name=f"{label} ({counts.get(kind, 0):,})".replace(",", "."))
+        group.add_to(m)
+        groups[kind] = group.get_name()
     folium.LayerControl(collapsed=False).add_to(m)
     m.get_root().script.add_child(folium.Element(_MARKERS_JS % {
-        "points": json.dumps(_point_rows(points), separators=(",", ":")),
-        "group": group.get_name(),
+        "points": json.dumps(rows, separators=(",", ":")),
+        "groups": "{" + ",".join(f"{k}:{name}" for k, name in groups.items()) + "}",
+        "map": m.get_name(),
     }))
 
     stamp = generated_at.strftime("%d/%m/%Y %H:%M")

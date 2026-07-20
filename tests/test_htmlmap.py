@@ -84,12 +84,12 @@ def test_point_rows_inverte_lng_lat_e_arredonda():
     points = [{"id": "pop-1", "location": [-46.601234567, -23.551234567],
                "residents": 12, "jobs": 34}]
 
-    assert htmlmap._point_rows(points) == [[-23.55123, -46.60123, 12, 34, "pop-1"]]
+    assert htmlmap._point_rows(points) == [[-23.55123, -46.60123, 12, 34, "pop-1", "", "work"]]
 
 
 def test_point_rows_assume_zero_sem_residents_e_jobs():
     assert htmlmap._point_rows([{"id": "pop-1", "location": [-46.6, -23.55]}]) == [
-        [-23.55, -46.6, 0, 0, "pop-1"]
+        [-23.55, -46.6, 0, 0, "pop-1", "", "home"]
     ]
 
 
@@ -123,11 +123,12 @@ def test_regressao_circulos_criados_dentro_do_listener_de_load(render):
     html, _ = render(make_points(3))
 
     bloco = listener_block(html)
-    assert ".addTo(group)" in bloco
-    assert html.count(".addTo(group)") == bloco.count(".addTo(group)")
+    assert ".addTo(groups[kind])" in bloco
+    assert html.count(".addTo(groups") == bloco.count(".addTo(groups")
 
-    variavel_do_grupo = re.search(r"var group = (feature_group_\w+);", bloco).group(1)
-    declaracao = f"var {variavel_do_grupo} = L.featureGroup("
+    grupos = re.search(r"var groups = \{(.*?)\};", bloco).group(1)
+    primeiro = re.search(r"(feature_group_\w+)", grupos).group(1)
+    declaracao = f"var {primeiro} = L.featureGroup("
     assert declaracao in html
     assert html.index(declaracao) > html.index("window.addEventListener('load'")
 
@@ -158,7 +159,7 @@ def test_write_sem_zonas_nao_desenha_os_limites(render):
     html, _ = render(make_points(2))
 
     assert "limites das zonas" not in html
-    assert "pontos de demanda" in html
+    assert "moradia (" in html
 
 
 def test_write_com_zonas_desenha_os_limites(render, zones):
@@ -167,3 +168,48 @@ def test_write_com_zonas_desenha_os_limites(render, zones):
     assert "limites das zonas" in html
     assert "zona OD:" in html
     assert '"zona": 1' in html.replace("&quot;", '"')
+
+
+def test_kind_separa_as_camadas_do_mapa():
+    poi = {"id": "AIR_Congonhas", "name": "Congonhas", "residents": 0, "jobs": 900}
+    gateway = {"id": "EXT_N-46.6_-23.2", "residents": 0, "jobs": 500}
+    casa = {"id": "z1h1", "residents": 800, "jobs": 0}
+    trabalho = {"id": "z1w1", "residents": 0, "jobs": 800}
+    assert htmlmap._kind(poi) == "poi"
+    assert htmlmap._kind(gateway) == "gateway"
+    assert htmlmap._kind(casa) == "home"
+    assert htmlmap._kind(trabalho) == "work"
+
+
+def test_point_rows_carrega_nome_e_camada():
+    pontos = [{"id": "AIR_X", "name": "Aeroporto X", "location": [-46.6, -23.5],
+               "residents": 0, "jobs": 700}]
+    linha = htmlmap._point_rows(pontos)[0]
+    assert linha[4] == "AIR_X" and linha[5] == "Aeroporto X" and linha[6] == "poi"
+
+
+def test_mapa_cria_uma_camada_por_tipo(tmp_path):
+    pontos = [
+        {"id": "z1h1", "location": [-46.6, -23.5], "residents": 100, "jobs": 0},
+        {"id": "z1w1", "location": [-46.5, -23.5], "residents": 0, "jobs": 100},
+        {"id": "EXT_N-46.6_-23.2", "location": [-46.6, -23.2], "residents": 0, "jobs": 50},
+        {"id": "SPO_Arena", "name": "Arena", "location": [-46.4, -23.5],
+         "residents": 0, "jobs": 90},
+    ]
+    destino = tmp_path / "mapa.html"
+    htmlmap.write(pontos, (-46.5, -23.5), destino)
+    html = destino.read_text(encoding="utf-8")
+    for rotulo in ("moradia (1)", "trabalho (1)", "externas (1)", "equipamentos (1)"):
+        assert rotulo in html
+
+
+def test_mapa_esconde_os_rotulos_de_poi_em_zoom_baixo(tmp_path):
+    """Com a região inteira na tela os rótulos se sobrepõem e viram um borrão."""
+    pontos = [{"id": "SPO_Arena", "name": "Arena", "location": [-46.4, -23.5],
+               "residents": 0, "jobs": 90}]
+    destino = tmp_path / "mapa.html"
+    htmlmap.write(pontos, (-46.5, -23.5), destino)
+    html = destino.read_text(encoding="utf-8")
+    assert ".poi-marker span { display: none; }" in html
+    assert ".poi-labels .poi-marker span" in html
+    assert "map.getZoom() >= 12" in html

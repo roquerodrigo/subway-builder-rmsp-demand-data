@@ -295,7 +295,8 @@ def test_aggregate_recalcula_do_zero():
         "b": {"id": "b", "location": [1, 1], "jobs": 99, "residents": 99, "popIds": ["velho"]},
     }
     generated = [{"id": "p1", "size": 10, "residenceId": "a", "jobId": "b"}]
-    pops._aggregate(points, generated)
+    kept = pops.aggregate(points, generated)
+    assert len(kept) == 2
     assert points["a"]["residents"] == 10 and points["a"]["jobs"] == 0
     assert points["b"]["jobs"] == 10 and points["b"]["residents"] == 0
     assert points["a"]["popIds"] == ["p1"] and points["b"]["popIds"] == ["p1"]

@@ -249,14 +249,14 @@ def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
     pops = merge_identical_commutes(pops)
     pops = split_oversized(pops, settings.max_pop_size)
 
-    _aggregate(points, pops)
-    res_pts = sum(1 for p in points.values() if p["residents"] > 0)
-    job_pts = sum(1 for p in points.values() if p["jobs"] > 0)
+    kept = aggregate(points, pops)
+    res_pts = sum(1 for p in kept if p["residents"] > 0)
+    job_pts = sum(1 for p in kept if p["jobs"] > 0)
     log.info(
         "gerados: %d points (%d casa, %d trabalho), %d pops | Σsize=%d",
-        len(points), res_pts, job_pts, len(pops), sum(p["size"] for p in pops),
+        len(kept), res_pts, job_pts, len(pops), sum(p["size"] for p in pops),
     )
-    return list(points.values()), pops
+    return kept, pops
 
 
 def merge_identical_commutes(pops: list[dict]) -> list[dict]:
@@ -297,13 +297,20 @@ def split_oversized(pops: list[dict], limit: int) -> list[dict]:
     return out
 
 
-def _aggregate(points: dict[str, dict], pops: list[dict]) -> None:
-    """Recalcula residents/jobs/popIds — casa (h/hf) só recebe residents, trabalho (w/wf) jobs."""
-    for p in points.values():
+def aggregate(points, pops: list[dict]) -> list[dict]:
+    """Recalcula residents/jobs/popIds a partir dos pops e descarta os pontos que ficaram sem
+    demanda — é a mesma reconciliação que o ``sanitize`` do depot faz na importação.
+
+    Precisa rodar de novo sempre que um ``jobId`` mudar de dono, como na captura pelos
+    equipamentos nomeados.
+    """
+    by_id = points if isinstance(points, dict) else {p["id"]: p for p in points}
+    for p in by_id.values():
         p["popIds"], p["jobs"], p["residents"] = [], 0, 0
     for pop in pops:
-        r, j = points[pop["residenceId"]], points[pop["jobId"]]
+        r, j = by_id[pop["residenceId"]], by_id[pop["jobId"]]
         r["residents"] += pop["size"]
         r["popIds"].append(pop["id"])
         j["jobs"] += pop["size"]
         j["popIds"].append(pop["id"])
+    return [p for p in by_id.values() if p["jobs"] + p["residents"] > 0]
