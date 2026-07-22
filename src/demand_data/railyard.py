@@ -15,10 +15,8 @@ log = logging.getLogger(__name__)
 
 _ZOOM = 12
 _OD_URL = "https://transparencia.metrosp.com.br/dataset/pesquisa-origem-e-destino"
-_CNEFE_URL = ("https://www.ibge.gov.br/estatisticas/sociais/populacao/"
-              "38734-cadastro-nacional-de-enderecos-para-fins-estatisticos.html")
-_CENSO_URL = ("https://www.ibge.gov.br/estatisticas/sociais/populacao/"
-              "22827-censo-demografico-2022.html")
+_DATA_URL = "https://www.rodrigoroque.dev/transporte-sp-origem-destino/dados/"
+_OSM_URL = "https://www.openstreetmap.org/"
 
 
 def build_config(points: list[dict], pops: list[dict], bbox, name: str, code: str,
@@ -51,16 +49,15 @@ def build_config(points: list[dict], pops: list[dict], bbox, name: str, code: st
 def _stats(points: list[dict], pops: list[dict]) -> dict[str, int]:
     sizes = sorted(p["size"] for p in pops)
     demand = sorted(p["jobs"] + p["residents"] for p in points)
-    gateways = [p for p in points if p["id"].startswith("EXT_")]
+    named = [p for p in points if p.get("name")]
     return {
         "points": len(points),
         "pops": len(pops),
-        "population": sum(sizes),
+        "trips": sum(sizes),
         "median_pop": sizes[len(sizes) // 2] if sizes else 0,
         "max_pop": sizes[-1] if sizes else 0,
         "median_point": demand[len(demand) // 2] if demand else 0,
-        "gateways": len(gateways),
-        "gateway_people": sum(p["jobs"] + p["residents"] for p in gateways),
+        "named": len(named),
     }
 
 
@@ -74,35 +71,36 @@ def build_description(points: list[dict], pops: list[dict], generated_at: dateti
     s = _stats(points, pops)
     return f"""# Região Metropolitana de São Paulo
 
-Demanda gerada a partir da **Pesquisa Origem-Destino 2023** do Metrô-SP, com a densidade
-intra-zona resolvida por endereços e lotes reais.
+Demanda gerada a partir das **viagens observadas** da Pesquisa Origem-Destino 2023 do
+Metrô-SP, cada uma geolocalizada na origem e no destino reais.
 
 ## Números
 
 | | |
 |---|---|
-| População | {_br(s["population"])} |
+| Viagens/dia | {_br(s["trips"])} |
 | Pontos de demanda | {_br(s["points"])} |
 | Pops | {_br(s["pops"])} |
 | Tamanho do pop (mediana / máximo) | {_br(s["median_pop"])} / {_br(s["max_pop"])} |
 | Demanda por ponto (mediana) | {_br(s["median_point"])} |
-| Conexões externas | {s["gateways"]} ({_br(s["gateway_people"])} pessoas) |
+| Destinos nomeados | {_br(s["named"])} |
 
 ## Metodologia
 
-- Cada morador vai para o destino que **declarou** na pesquisa: local de trabalho, escola
-  ou, para quem não tem nenhum dos dois, os motivos não-pendulares (compras, saúde, lazer).
-- A posição dentro da zona sai de um sorteio proporcional à densidade entre endereços
-  reais — CNEFE na região e lotes do IPTU na capital, estes ponderados por área construída
-  e uso.
-- Quem trabalha ou estuda fora da região chega a uma conexão externa na borda do recorte.
+- Cada linha da pesquisa é uma **viagem observada**, com a coordenada real de onde começa e
+  termina. Nada é sorteado: o par origem→destino é o par de fato registrado.
+- A viagem é orientada em casa↔atividade pelo motivo do destino: a casa é a origem, salvo na
+  volta pra casa, em que é o destino. Ida e volta de um mesmo trajeto se fundem num pop, e o
+  tamanho do pop é o número de **viagens/dia** que a pesquisa expande.
+- Cada destino de educação, saúde, comércio ou lazer adota a identidade do equipamento real
+  mais próximo do **OpenStreetMap** (escola, hospital, shopping, parque…), sem criar ponto.
 - Os tempos e distâncias de carro são calculados por roteamento na malha viária.
 
 ## Fontes
 
-- [Pesquisa Origem-Destino 2023]({_OD_URL}) — Metrô-SP
-- [CNEFE 2022]({_CNEFE_URL}) e [Censo 2022]({_CENSO_URL}) — IBGE
-- [GeoSampa](https://geosampa.prefeitura.sp.gov.br/) — lotes do IPTU, Prefeitura de São Paulo
+- [Viagens geolocalizadas da OD 2023]({_DATA_URL}) — a partir da
+  [Pesquisa Origem-Destino 2023]({_OD_URL}) do Metrô-SP
+- [OpenStreetMap]({_OSM_URL}) — equipamentos nomeados (escolas, hospitais, shoppings, parques)
 
 Gerado em {generated_at.strftime("%d/%m/%Y")} por
 [subway-builder-rmsp-demand-data](https://github.com/roquerodrigo/subway-builder-rmsp-demand-data).

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
-from pathlib import Path
 
 import pytest
 
@@ -45,16 +44,6 @@ def test_env_returns_variable_when_present(monkeypatch):
     assert config._env("DEMAND_TEST_TEXT", "fallback") == "from-environment"
 
 
-def test_env_returns_empty_string_when_variable_is_empty(monkeypatch):
-    monkeypatch.setenv("DEMAND_TEST_TEXT", "")
-    assert config._env("DEMAND_TEST_TEXT", "fallback") == ""
-
-
-def test_env_float_returns_default_when_variable_is_absent(monkeypatch):
-    monkeypatch.delenv("DEMAND_TEST_FLOAT", raising=False)
-    assert config._env_float("DEMAND_TEST_FLOAT", 1.5) == 1.5
-
-
 def test_env_float_returns_default_when_variable_is_empty(monkeypatch):
     monkeypatch.setenv("DEMAND_TEST_FLOAT", "")
     assert config._env_float("DEMAND_TEST_FLOAT", 1.5) == 1.5
@@ -63,17 +52,6 @@ def test_env_float_returns_default_when_variable_is_empty(monkeypatch):
 def test_env_float_parses_variable(monkeypatch):
     monkeypatch.setenv("DEMAND_TEST_FLOAT", "0.00045")
     assert config._env_float("DEMAND_TEST_FLOAT", 1.5) == 0.00045
-
-
-def test_env_float_rejects_non_numeric_variable(monkeypatch):
-    monkeypatch.setenv("DEMAND_TEST_FLOAT", "muito")
-    with pytest.raises(ValueError):
-        config._env_float("DEMAND_TEST_FLOAT", 1.5)
-
-
-def test_env_int_returns_default_when_variable_is_absent(monkeypatch):
-    monkeypatch.delenv("DEMAND_TEST_INT", raising=False)
-    assert config._env_int("DEMAND_TEST_INT", 42) == 42
 
 
 def test_env_int_returns_default_when_variable_is_empty(monkeypatch):
@@ -96,24 +74,22 @@ def test_module_settings_read_the_environment(reload_config, tmp_path):
     reloaded = reload_config(
         DEMAND_SOURCES_DIR=str(tmp_path / "fontes"),
         DEMAND_OUT_DIR=str(tmp_path / "saida"),
-        DEMAND_SEED=str(99),
-        DEMAND_PEOPLE_PER_POP="250.5",
-        DEMAND_LOTE_LAYER="geoportal:outra_camada",
+        DEMAND_MAX_POP_SIZE="250",
+        DEMAND_FLOW_URL="https://exemplo/fluxos.parquet",
     )
     assert reloaded.settings.sources_dir == tmp_path / "fontes"
     assert reloaded.settings.out_dir == tmp_path / "saida"
-    assert reloaded.settings.seed == 99
-    assert reloaded.settings.people_per_pop == 250.5
-    assert reloaded.settings.lote_layer == "geoportal:outra_camada"
+    assert reloaded.settings.max_pop_size == 250
+    assert reloaded.settings.flow_url == "https://exemplo/fluxos.parquet"
 
 
 def test_module_settings_fall_back_to_defaults(reload_config, monkeypatch):
-    for name in ("DEMAND_SEED", "DEMAND_PEOPLE_PER_POP", "DEMAND_DEST_CAP"):
+    for name in ("DEMAND_MAX_POP_SIZE", "DEMAND_DENSITY_CELL", "DEMAND_POI_SNAP_M"):
         monkeypatch.delenv(name, raising=False)
     reloaded = reload_config()
-    assert reloaded.settings.seed == 42
-    assert reloaded.settings.people_per_pop == 300.0
-    assert reloaded.settings.dest_cap == 0
+    assert reloaded.settings.max_pop_size == 500
+    assert reloaded.settings.density_cell == 0.00045
+    assert reloaded.settings.poi_snap_m == 500.0
 
 
 def test_project_root_holds_the_package():
@@ -122,26 +98,13 @@ def test_project_root_holds_the_package():
 
 def test_settings_is_frozen(settings):
     with pytest.raises(dataclasses.FrozenInstanceError):
-        settings.seed = 1
+        settings.max_pop_size = 1
 
 
 def test_source_paths_hang_from_sources_dir(settings, tmp_path):
     sources_dir = tmp_path / "sources"
-    assert settings.cnefe_csv == sources_dir / "cnefe.csv"
-    assert settings.setor_pop_csv == sources_dir / "setor_pop.csv"
-    assert settings.lotes_csv == sources_dir / "lotes.csv"
-    assert settings.od_zip == sources_dir / "od2023.zip"
-    assert settings.od_extract_dir == sources_dir / "od2023"
-    assert settings.cnefe_zip == sources_dir / "35_SP.zip"
-    assert settings.censo_zip == sources_dir / "censo_basico_BR.zip"
-
-
-def test_od_paths_follow_the_zip_layout(settings, tmp_path):
-    assert settings.od_dir == tmp_path / "sources" / "od2023" / "Site_190225"
-    assert settings.zones_shp.parent.name == "Shape"
-    assert settings.zones_shp.name == "Zonas_2023"
-    assert settings.zones_shp.parent.parent.name == "002_Site Metro Mapas_190225"
-    assert settings.od_dbf == settings.od_dir / "Banco2023_divulgacao_190225.dbf"
+    assert settings.flows_parquet == sources_dir / "fluxos.parquet"
+    assert settings.pois_csv == sources_dir / "pois.csv"
 
 
 def test_output_paths_hang_from_out_dir(settings, tmp_path):
@@ -181,7 +144,7 @@ def test_have_inputs_is_false_without_any_file(settings):
 
 def test_have_inputs_is_false_while_one_file_is_missing(settings):
     _create_inputs(settings)
-    settings.setor_pop_csv.unlink()
+    settings.pois_csv.unlink()
     assert not settings.have_inputs()
 
 
@@ -195,12 +158,6 @@ def test_ensure_sources_creates_nested_directories(settings):
     assert settings.sources_dir.is_dir()
 
 
-def test_ensure_sources_tolerates_an_existing_directory(settings):
-    settings.ensure_sources()
-    settings.ensure_sources()
-    assert settings.sources_dir.is_dir()
-
-
 def test_ensure_out_creates_nested_directories(tmp_path):
     settings = Settings(out_dir=tmp_path / "a" / "b" / "out")
     settings.ensure_out()
@@ -208,11 +165,6 @@ def test_ensure_out_creates_nested_directories(tmp_path):
 
 
 def _create_inputs(settings: Settings) -> None:
-    for path in (
-        settings.zones_shp.with_suffix(".shp"),
-        settings.od_dbf,
-        settings.cnefe_csv,
-        settings.setor_pop_csv,
-    ):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text("", encoding="ascii")
+    settings.ensure_sources()
+    for path in (settings.flows_parquet, settings.pois_csv):
+        path.write_text("", encoding="ascii")

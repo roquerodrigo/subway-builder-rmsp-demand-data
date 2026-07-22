@@ -1,7 +1,8 @@
 """Configuração do subway-builder-rmsp-demand-data (via .env na raiz).
 
-O projeto é autossuficiente: baixa e processa os próprios dados das pesquisas em
-``data/sources`` (comando ``sources``).
+O projeto consome as viagens já geolocalizadas do repositório de dados
+(``transporte-sp-origem-destino``) e os equipamentos do OpenStreetMap; o comando
+``sources`` baixa os dois para ``data/sources``.
 """
 
 from __future__ import annotations
@@ -34,89 +35,34 @@ def _env_int(name: str, default: int) -> int:
 class Settings:
     sources_dir: Path = Path(_env("DEMAND_SOURCES_DIR", str(PROJECT_ROOT / "data" / "sources")))
 
-    # TOTAL de pops = Σ_zona round(pop_zona / people_per_pop), distribuído entre as zonas
-    # ∝ ÁREA (não população). Menor = mais pops.
-    people_per_pop: float = _env_float("DEMAND_PEOPLE_PER_POP", 300.0)
-    # grade (graus) de agregação da densidade (~50 m a -23.5°): átomo de posicionamento e
-    # espaçamento mínimo entre pontos. Os pontos NÃO são um por célula — são sorteados entre
-    # as células ∝ densidade, senão formam uma treliça visível no mapa.
+    # grade (graus) de quantização dos pontos (~50 m a -23.5°): endereços mais próximos que
+    # isso viram um ponto só, o que também funde a ida e a volta de um mesmo trajeto.
     density_cell: float = _env_float("DEMAND_DENSITY_CELL", 0.00045)
-    # pessoas (moradores ou trabalhadores) por ponto: define quantos pontos a zona recebe.
-    people_per_point: float = _env_float("DEMAND_PEOPLE_PER_POINT", 1000.0)
-    seed: int = _env_int("DEMAND_SEED", 42)
+    # tamanho máximo de pop: um pop é indivisível na simulação, então os grandes são
+    # fatiados. 0 = sem limite.
+    max_pop_size: int = _env_int("DEMAND_MAX_POP_SIZE", 500)
 
     # identificação do mapa nos arquivos de submissão ao Railyard
     map_code: str = _env("DEMAND_MAP_CODE", "RMSP")
     map_name: str = _env("DEMAND_MAP_NAME", "Região Metropolitana de São Paulo")
     map_creator: str = _env("DEMAND_MAP_CREATOR", "")
-    map_version: str = _env("DEMAND_MAP_VERSION", "1.1.0")
+    map_version: str = _env("DEMAND_MAP_VERSION", "2.0.0")
     # servidor OSRM local para tempo/distância de carro (vazio = deixa o depot rotear)
     osrm_url: str = _env("DEMAND_OSRM_URL", "")
-    # fração máxima da demanda de uma zona que um equipamento pode capturar: nenhuma zona é
-    # um equipamento só, e sem o teto os de capacidade alta levavam a zona inteira.
-    poi_max_zone_share: float = _env_float("DEMAND_POI_MAX_ZONE_SHARE", 0.6)
-    # folga (m) somada à extensão do equipamento ao medir a atividade dele
-    poi_radius_m: float = _env_float("DEMAND_POI_MARGIN_M", 80.0)
-    # acima disso, o motivo ganha mais destinos do mesmo tipo na zona: um poço de demanda
-    # que a rede atende ou não atende em bloco não representa bem a cidade.
-    poi_spread_above: float = _env_float("DEMAND_POI_SPREAD_ABOVE", 2000.0)
-    # destinos de trabalho por zona de origem (0 = todos). Não altera o total de pops.
-    dest_cap: int = _env_int("DEMAND_DEST_CAP", 0)
-    # tamanho mínimo de pop: limita nº de pops da zona a P/min_pop_size, fundindo os pops
-    # minúsculos das zonas esparsas em menos pops maiores. 0 = sem limite.
-    min_pop_size: int = _env_int("DEMAND_MIN_POP_SIZE", 50)
-    # tamanho máximo de pop: um pop é indivisível na simulação, então os grandes são
-    # fatiados. 0 = sem limite.
-    max_pop_size: int = _env_int("DEMAND_MAX_POP_SIZE", 500)
 
-    # COD_ESPECIE 1,2 = domicílio; cada endereço pesa pop_do_setor / nº_endereços_do_setor.
-    cnefe_res_especies: frozenset[int] = frozenset({1, 2})
-    # COD_ESPECIE 3-6,8 = estabelecimentos → densidade de emprego.
-    cnefe_job_especies: frozenset[int] = frozenset({3, 4, 5, 6, 8})
-    # Peso de emprego por espécie (o CNEFE não conta vínculos): 4=ensino e 5=saúde empregam
-    # mais; 3=agropecuário e 8=religioso, menos; 6=comércio/serviços/indústria é a base.
-    cnefe_job_especie_weight: dict[int, float] = field(
-        default_factory=lambda: {3: 0.5, 4: 3.0, 5: 3.0, 6: 1.0, 8: 0.3}
-    )
-    # 7 = edificação em construção (descartada).
-    cnefe_skip_especies: frozenset[int] = frozenset({7})
+    # distância máxima (m) para um destino adotar o equipamento nomeado mais próximo
+    poi_snap_m: float = _env_float("DEMAND_POI_SNAP_M", 500.0)
 
-    # conversão graus<->metros a ~lat -23.5
+    # conversão graus->metros a ~lat -23.5
     m_per_deg_lat: float = 110900.0
-    m_per_deg_lng: float = 101900.0
 
-    od_zip_url: str = _env(
-        "DEMAND_OD_ZIP_URL",
-        "https://transparencia.metrosp.com.br/sites/default/files/Site_190225_PesquisaOD2023.zip",
+    # viagens já geolocalizadas do repositório de dados (uma linha por viagem)
+    flow_url: str = _env(
+        "DEMAND_FLOW_URL",
+        "https://www.rodrigoroque.dev/transporte-sp-origem-destino/dados/fluxos.parquet",
     )
-    cnefe_url: str = _env(
-        "DEMAND_CNEFE_URL",
-        "https://ftp.ibge.gov.br/Cadastro_Nacional_de_Enderecos_para_Fins_Estatisticos/"
-        "Censo_Demografico_2022/Arquivos_CNEFE/CSV/UF/35_SP.zip",
-    )
-    censo_url: str = _env(
-        "DEMAND_CENSO_URL",
-        "https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/Agregados_por_Setores_Censitarios/"
-        "Agregados_por_Setor_csv/Agregados_por_setores_basico_BR_20260520.zip",
-    )
-
-    # GeoSampa: lotes do IPTU (densidade por área construída e uso), só do município de SP →
-    # densidade da capital; o resto da RMSP fica no CNEFE (híbrido).
-    lote_wfs_url: str = _env(
-        "DEMAND_LOTE_WFS_URL",
-        "http://wfs.geosampa.prefeitura.sp.gov.br/geoserver/geoportal/wfs",
-    )
-    lote_layer: str = _env("DEMAND_LOTE_LAYER", "geoportal:lote_cidadao")
     # OpenStreetMap: coordenadas dos equipamentos nomeados
     overpass_url: str = _env("DEMAND_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
-    lote_page: int = _env_int("DEMAND_LOTE_PAGE", 10000)
-    # só usa lotes numa zona se cobrirem >= esta fração das células CNEFE da zona (evita a
-    # amostra de borda em zonas mais fora da capital).
-    lote_min_coverage: float = _env_float("DEMAND_LOTE_MIN_COVERAGE", 0.5)
-    # dc_tipo_uso_imovel -> "R" (residência) ou "N" (não-residencial); "Terreno"/nulo descartados.
-    lote_use_map: dict[str, str] = field(default_factory=lambda: {
-        "Residencial": "R", "Condomínio": "R", "Não residencial": "N",
-    })
 
     out_dir: Path = Path(_env("DEMAND_OUT_DIR", str(PROJECT_ROOT / "out")))
     # bbox da RMSP: min_lng, min_lat, max_lng, max_lat
@@ -125,48 +71,12 @@ class Settings:
     )
 
     @property
-    def od_dir(self) -> Path:
-        return self.sources_dir / "od2023" / "Site_190225"
-
-    @property
-    def zones_shp(self) -> Path:
-        return self.od_dir / "002_Site Metro Mapas_190225" / "Shape" / "Zonas_2023"
-
-    @property
-    def od_dbf(self) -> Path:
-        return self.od_dir / "Banco2023_divulgacao_190225.dbf"
-
-    @property
-    def cnefe_csv(self) -> Path:
-        return self.sources_dir / "cnefe.csv"
-
-    @property
-    def setor_pop_csv(self) -> Path:
-        return self.sources_dir / "setor_pop.csv"
+    def flows_parquet(self) -> Path:
+        return self.sources_dir / "fluxos.parquet"
 
     @property
     def pois_csv(self) -> Path:
         return self.sources_dir / "pois.csv"
-
-    @property
-    def lotes_csv(self) -> Path:
-        return self.sources_dir / "lotes.csv"
-
-    @property
-    def od_zip(self) -> Path:
-        return self.sources_dir / "od2023.zip"
-
-    @property
-    def od_extract_dir(self) -> Path:
-        return self.sources_dir / "od2023"
-
-    @property
-    def cnefe_zip(self) -> Path:
-        return self.sources_dir / "35_SP.zip"
-
-    @property
-    def censo_zip(self) -> Path:
-        return self.sources_dir / "censo_basico_BR.zip"
 
     @property
     def demand_json(self) -> Path:
@@ -181,17 +91,12 @@ class Settings:
         return b[0] <= lng <= b[2] and b[1] <= lat <= b[3]
 
     def missing_inputs(self) -> list[Path]:
-        """Arquivos processados que ``sources`` deveria ter deixado em data/sources."""
-        required = (
-            self.zones_shp.with_suffix(".shp"),
-            self.od_dbf,
-            self.cnefe_csv,
-            self.setor_pop_csv,
-        )
+        """Arquivos que ``sources`` deveria ter deixado em data/sources."""
+        required = (self.flows_parquet, self.pois_csv)
         return [path for path in required if not path.exists()]
 
     def have_inputs(self) -> bool:
-        """True se os arquivos processados já existem (não precisa rodar ``sources``)."""
+        """True se os arquivos já existem (não precisa rodar ``sources``)."""
         return not self.missing_inputs()
 
     def ensure_sources(self) -> None:

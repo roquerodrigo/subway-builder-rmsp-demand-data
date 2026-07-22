@@ -1,34 +1,29 @@
-"""Geração de pops a partir da OD + densidade.
+"""Geração de pops a partir das viagens observadas (:mod:`demand_data.flows`).
 
-Pipeline ÚNICA de células (:func:`demand_data.density.zone_candidates`) dividida em células
-de casa e de trabalho (disjuntas por vocação):
-  1. o TAMANHO do pop da zona vem de um orçamento ∝ ÁREA (Σ round(pop / people_per_pop));
-  2. a casa é amostrada entre as células de casa da zona ∝ população;
-  3. as pessoas da zona são repartidas entre os destinos ∝ matriz O-D e viram pops daquele
-     tamanho; a célula de trabalho sai das células de trabalho do destino ∝ densidade de
-     emprego, numa alocação única por zona de destino.
+Cada viagem já vem com origem e destino resolvidos em endereço; aqui ela só é orientada em
+casa↔atividade pelo motivo (:func:`flows.orient`) e vira um pop. As coordenadas são
+quantizadas a uma grade fina para deduplicar endereços quase coincidentes — o que também
+funde a ida e a volta de um mesmo trajeto no mesmo par de pontos.
 
-Como casa e trabalho vêm de células disjuntas, os pontos nunca coincidem; cada ponto tem
-um tipo só (casa = ``residents``, trabalho = ``jobs``). Saída ``(points, pops)`` no schema
-do depot / Subway Builder.
+Casa e atividade nunca dividem um ponto: cada célula recebe um id por papel (``h`` moradia,
+``w`` destino), então um ponto tem sempre um tipo só (ADR-0010). Saída ``(points, pops)`` no
+schema do depot / Subway Builder.
 """
 
 from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from collections.abc import Iterable
 
 import numpy as np
 
 from demand_data.config import settings
-from demand_data.density import Candidates
-from demand_data.od import ACTIVITIES
+from demand_data.flows import Flow, orient
 
 log = logging.getLogger(__name__)
 
 _NUDGE = 1e-5  # ~1 m: separa coordenada duplicada (fallback raro)
-# motivo da viagem, carregado até a etapa dos equipamentos e removido na escrita
-ACTIVITY_FIELD = "_activity"
 
 
 def _largest_remainder(weights, total: int) -> list[int]:
@@ -46,211 +41,46 @@ def _largest_remainder(weights, total: int) -> list[int]:
     return out.tolist()
 
 
-def _alloc(size: int, n: int, rng) -> np.ndarray:
-    """Reparte ``n`` pops igualmente entre ``size`` pontos e embaralha, devolvendo o índice de
-    ponto de cada pop.
+def generate(flows: Iterable[Flow]):
+    """Constrói ``(points, pops)`` a partir das viagens orientadas em casa↔atividade.
 
-    Os pontos já foram sorteados ∝ densidade (ver :mod:`demand_data.density`), então cada um
-    representa a mesma fatia de demanda e a repartição aqui é uniforme. A repartição inteira
-    só é fiel com ``n`` grande — em ``n`` pequeno ela premia sempre os primeiros índices, e é
-    por isso que cada chamada precisa cobrir TODOS os pops daquela fonte de uma vez
-    (ver :func:`generate`), nunca um par origem-destino por vez.
+    A casa de uma viagem é a origem, salvo na volta pra casa (motivo Residência), em que é o
+    destino. O ``size`` do pop é o peso de expansão ``trips`` da viagem; ida e volta do mesmo
+    trajeto caem no mesmo par de pontos e são fundidas (:func:`merge_identical_commutes`).
     """
-    counts = _largest_remainder(np.ones(size), n)
-    idx = np.repeat(np.arange(size), counts)
-    rng.shuffle(idx)
-    return idx
-
-
-def _plan_destinations(
-    dests: list[tuple[int, float]], people: int, target_size: int
-) -> list[tuple[int, int, int]]:
-    """[(zona de destino, nº de pops, pessoas)] repartindo as PESSOAS da zona ∝ matriz O-D.
-
-    Repartir o nº de POPS ∝ fluxo, como os pops de uma zona têm todos ~o mesmo tamanho,
-    arredondava o destino inteiro para cima ou para baixo: os de fluxo menor ficavam zerados
-    e as pessoas deles iam parar nos maiores. Aqui o fluxo decide quantas pessoas vão a cada
-    destino, e o nº de pops sai do tamanho de pop da zona.
-    """
-    share = _largest_remainder([f for _, f in dests], people)
-    kept = [(wz, ppl) for (wz, _f), ppl in zip(dests, share, strict=True) if ppl > 0]
-    floor = settings.min_pop_size
-    if floor > 0 and any(ppl >= floor for _, ppl in kept):
-        kept = [(wz, ppl) for wz, ppl in kept if ppl >= floor]
-    if not kept:
-        return []
-    # a cauda que não alcança o tamanho mínimo volta para quem ficou, nas mesmas proporções
-    final = _largest_remainder([ppl for _, ppl in kept], people)
-    return [
-        (wz, max(1, round(ppl / target_size)), int(ppl))
-        for (wz, _ppl), ppl in zip(kept, final, strict=True)
-        if ppl > 0
-    ]
-
-
-def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
-    """Constrói (points, pops): casa dos pontos de casa, destino dos pontos de trabalho.
-
-    Cada morador vai para o destino que declarou na pesquisa — trabalho, escola ou um motivo
-    não-pendular — em vez de todos disputarem a matriz de trabalho.
-    """
-    rng = np.random.default_rng(settings.seed)
-    pop = survey.population
-
-    out_by_home: dict[str, dict[int, list[tuple[int, float]]]] = {
-        name: defaultdict(list) for name in ACTIVITIES
-    }
-    for name in ACTIVITIES:
-        for (home, target), weight in survey.flows[name].items():
-            out_by_home[name][home].append((target, weight))
-
+    cell = settings.density_cell
     points: dict[str, dict] = {}
-    used: set[tuple[float, float]] = set()
-    centroids = {zid: (poly.centroid.x, poly.centroid.y)
-                 for zid, poly in zip(zones.ids, zones.polygons, strict=True)
-                 if not poly.is_empty}
+    cell_id: dict[tuple[int, str, int, int], str] = {}
+    counters: dict[tuple[int, str], int] = defaultdict(int)
 
-    def gateway(zone: int) -> str:
-        """Portal de saída da região para quem trabalha ou estuda fora das zonas da pesquisa.
-
-        A pesquisa não diz onde ficam essas zonas externas, só que estão fora; o portal é a
-        projeção do centroide da zona de origem na borda mais próxima do recorte. Só é
-        chamado para zonas que receberam pops, que por construção têm área e centroide.
-        """
-        lng, lat = centroids[zone]
-        min_lng, min_lat, max_lng, max_lat = settings.bbox
-        edges = (
-            ("W", (min_lng, lat), lng - min_lng),
-            ("E", (max_lng, lat), max_lng - lng),
-            ("S", (lng, min_lat), lat - min_lat),
-            ("N", (lng, max_lat), max_lat - lat),
-        )
-        side, (gx, gy), _distance = min(edges, key=lambda e: e[2])
-        # agrega os portais numa grade grossa, senão cada zona de origem criaria o seu
-        gx, gy = round(gx, 1), round(gy, 1)
-        pid = f"EXT_{side}{gx}_{gy}"
-        if pid not in points:
-            points[pid] = {"id": pid, "location": [gx, gy],
+    def point_of(zone: int, role: str, coord: tuple[float, float],
+                 place_type: str | None = None) -> str:
+        gx, gy = round(coord[0] / cell), round(coord[1] / cell)
+        key = (zone, role, gx, gy)
+        pid = cell_id.get(key)
+        if pid is None:
+            index = counters[(zone, role)]
+            counters[(zone, role)] += 1
+            pid = f"z{zone}{role}{index}"
+            cell_id[key] = pid
+            points[pid] = {"id": pid, "location": [round(coord[0], 6), round(coord[1], 6)],
                            "jobs": 0, "residents": 0, "popIds": []}
+        if place_type:
+            points[pid].setdefault("type", place_type)
         return pid
-
-    def point(prefix: str, z: int, i: int, cands: list[tuple[float, float]]) -> str:
-        pid = f"z{z}{prefix}{i}"
-        if pid in points:
-            return pid
-        x, y = round(cands[i][0], 6), round(cands[i][1], 6)
-        while (x, y) in used:
-            x = round(x + _NUDGE, 6)
-        used.add((x, y))
-        points[pid] = {"id": pid, "location": [x, y], "jobs": 0, "residents": 0, "popIds": []}
-        return pid
-
-    # prefixos: casa h/hf, trabalho w/wf (o sufixo f é o fallback quando a zona não tem
-    # pontos daquele tipo). Prefixos distintos mantêm cada ponto de tipo único.
-    def home_src(z: int):
-        if home_cands.get(z):
-            return home_cands[z], "h", z
-        if work_cands.get(z):
-            return work_cands[z], "hf", z
-        return None
-
-    def work_src(z: int):
-        if work_cands.get(z):
-            return work_cands[z], "w", z
-        if home_cands.get(z):
-            return home_cands[z], "wf", z
-        return None
-
-    ppp = settings.people_per_pop
-    elig = [z for z in sorted(pop) if pop[z] > 0 and home_src(z) is not None]
-    total = sum(max(1, round(pop[z] / ppp)) for z in elig)
-    area = {zid: poly.area * settings.m_per_deg_lat * settings.m_per_deg_lng / 1e6
-            for zid, poly in zip(zones.ids, zones.polygons, strict=True)}
-    n_by_zone = dict(zip(elig, _largest_remainder([area.get(z, 0.0) for z in elig], total),
-                         strict=True))
-    log.info("tamanho de pop por zona ∝ área da zona (alvo=%d pops)", total)
 
     pops: list[dict] = []
     seq = 0
-    # A célula de trabalho fica pendente e é sorteada só depois, uma vez por fonte de células:
-    # a maioria dos pares origem-destino manda 1 ou 2 pops, e alocar par a par empilharia
-    # todos eles na célula de maior peso da zona de destino.
-    pending: dict[tuple[int, str], list[int]] = defaultdict(list)
-    work_points: dict[tuple[int, str], list[tuple[float, float]]] = {}
-    for zone in elig:
-        n = n_by_zone[zone]
-        if n <= 0:
-            continue
-        P = round(pop[zone])
-        # não subdivide a zona em mais pops do que ela comporta ao tamanho mínimo:
-        # funde os pops minúsculos das zonas esparsas em menos pops maiores.
-        if settings.min_pop_size > 0:
-            n = min(n, max(1, round(P / settings.min_pop_size)))
-        hc, hpre, hz = home_src(zone)
-        target_size = max(1, P // n)
+    for flow in flows:
+        trip = orient(flow)
+        rid = point_of(trip.home_zone, "h", trip.home)
+        jid = point_of(trip.activity_zone, "w", trip.activity, trip.place_type)
+        seq += 1
+        pops.append({"id": f"p{seq:06d}", "size": int(trip.trips),
+                     "residenceId": rid, "jobId": jid,
+                     "drivingSeconds": 0, "drivingDistance": 0})
 
-        shares = survey.activity.get(zone, {})
-        by_activity = _largest_remainder([shares.get(name, 0.0) for name in ACTIVITIES], P)
-
-        # (destino, nº de pops, pessoas, motivo) — o motivo tem de viajar junto: ele decide
-        # quais equipamentos podem receber esse pop mais adiante
-        plans: list[tuple[str, int, int, str]] = []
-        outside: list[tuple[str, int, int, str]] = []
-        for name, people in zip(ACTIVITIES, by_activity, strict=True):
-            if people <= 0:
-                continue
-            # a fração é medida contra o total da própria atividade: os pesos da matriz de
-            # motivos não-pendulares são viagens, não pessoas, e não seriam comparáveis
-            away = survey.external[name].get(zone, 0.0)
-            declared = shares.get(name, 0.0)
-            leaving = round(people * away / declared) if declared > 0 else 0
-            if leaving > 0:
-                outside.append(
-                    (gateway(zone), max(1, round(leaving / target_size)), leaving, name)
-                )
-                people -= leaving
-            if people <= 0:
-                continue
-
-            dests = sorted(out_by_home[name].get(zone, []), key=lambda x: x[1], reverse=True)
-            if settings.dest_cap > 0:
-                dests = dests[: settings.dest_cap]
-            dests = [(wz, f) for wz, f in dests if work_src(wz) is not None] or [(zone, 1.0)]
-            plans += [(str(wz), k, ppl, name) for wz, k, ppl in
-                      _plan_destinations(dests, people, target_size)]
-        plans += outside
-        if not plans:
-            continue
-
-        h_idx = _alloc(len(hc), sum(k for _, k, _, _ in plans), rng)
-        i = 0
-        for target, k, people, activity in plans:
-            if target.startswith("EXT_"):
-                key = None
-            else:
-                wc, wpre, wzz = work_src(int(target)) or work_src(zone)
-                key = (wzz, wpre)
-                work_points[key] = wc
-            # k nunca passa de `people` (o tamanho-alvo é ≥ 1), então toda fatia sai positiva
-            for sz in _largest_remainder(np.ones(k), people):
-                hi = int(h_idx[i])
-                i += 1
-                rid = point(hpre, hz, hi, hc)
-                seq += 1
-                pops.append({"id": f"p{seq:06d}", "size": int(sz), "residenceId": rid,
-                             "jobId": target if key is None else "",
-                             "drivingSeconds": 0, "drivingDistance": 0,
-                             ACTIVITY_FIELD: activity})
-                if key is not None:
-                    pending[key].append(len(pops) - 1)
-
-    for key in sorted(pending):
-        wzz, wpre = key
-        wc = work_points[key]
-        idxs = pending[key]
-        for i, slot in zip(idxs, _alloc(len(wc), len(idxs), rng), strict=True):
-            pops[i]["jobId"] = point(wpre, wzz, int(slot), wc)
-
+    _separate_shared_cells(points)
     pops = merge_identical_commutes(pops)
     pops = split_oversized(pops, settings.max_pop_size)
 
@@ -264,14 +94,27 @@ def generate(zones, survey, home_cands: Candidates, work_cands: Candidates):
     return kept, pops
 
 
+def _separate_shared_cells(points: dict[str, dict]) -> None:
+    """Afasta ~1 m os pontos que nascem na mesma coordenada.
+
+    Uma casa e um destino podem cair na mesma célula (têm ids distintos, papel único), mas
+    coordenada duplicada quebra o jogo — então a colisão é resolvida no mapa.
+    """
+    used: set[tuple[float, float]] = set()
+    for point in points.values():
+        x, y = point["location"]
+        while (x, y) in used:
+            x = round(x + _NUDGE, 6)
+        used.add((x, y))
+        point["location"] = [x, y]
+
+
 def merge_identical_commutes(pops: list[dict]) -> list[dict]:
-    """Funde pops que ligam exatamente o mesmo par casa-trabalho — no jogo eles seriam a
-    mesma viagem repetida, e cada um custa uma entrada no arquivo."""
+    """Funde pops que ligam exatamente o mesmo par casa↔atividade — a ida e a volta de um
+    trajeto, e viagens repetidas, viram um pop só, somando os ``trips``."""
     merged: dict[tuple, dict] = {}
     for pop in pops:
-        # o motivo entra na chave: dois pops do mesmo par por motivos diferentes viram
-        # destinos diferentes quando os equipamentos entram
-        key = (pop["residenceId"], pop["jobId"], pop.get(ACTIVITY_FIELD))
+        key = (pop["residenceId"], pop["jobId"])
         first = merged.get(key)
         if first is None:
             merged[key] = pop

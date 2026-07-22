@@ -1,9 +1,8 @@
-"""Mapa HTML (folium) com os pontos gerados e os limites das zonas OD.
+"""Mapa HTML (folium) com os pontos gerados.
 
 Cada point vira um círculo no centroide, raio ∝ √(residents+jobs) e cor pelo balanço
-residências×empregos (azul = mais moradia, laranja = mais trabalho). Os limites das
-zonas OD entram como uma camada de contornos por baixo. Renderiza em canvas para
-aguentar dezenas de milhares de pontos.
+residências×empregos (azul = mais moradia, laranja = mais trabalho). Renderiza em canvas
+para aguentar dezenas de milhares de pontos.
 
 Os pontos viajam como um array compacto e os círculos nascem no navegador: um
 ``CircleMarker`` por ponto faz o folium escrever ~700 bytes de JS cada, o que levava o
@@ -21,18 +20,16 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _COORD_DECIMALS = 5  # ~1 m
-_ZONE_SIMPLIFY = 0.0008  # ~80 m: mantém o formato reconhecível e enxuga o GeoJSON
 
 # ordem em que as camadas aparecem no controle do mapa
 _LAYERS = (
     ("home", "moradia"),
-    ("work", "trabalho"),
-    ("gateway", "conexões externas"),
+    ("work", "destinos"),
     ("poi", "equipamentos"),
 )
 _KIND_INDEX = {kind: index for index, (kind, _label) in enumerate(_LAYERS)}
 # tipos na ordem em que o JS os traduz; 0 = sem tipo
-_TYPES = ("", "SCH", "HOS", "SHP", "PRK", "UNI", "SPO", "ZOO", "CNV", "AIR", "EXT")
+_TYPES = ("", "SCH", "HOS", "SHP", "PRK", "UNI", "SPO", "ZOO", "CNV")
 _TYPE_INDEX = {code: index for index, code in enumerate(_TYPES)}
 
 # no load: o folium só escreve o JS do mapa (e dos grupos) depois deste bloco
@@ -43,9 +40,8 @@ window.addEventListener('load', function () {
     var map = %(map)s;
     var TYPES = %(types)s;
     var NAMES = {SCH: 'ensino', HOS: 'saúde', SHP: 'comércio', PRK: 'lazer',
-                 UNI: 'ensino', SPO: 'lazer', ZOO: 'lazer', CNV: 'eventos',
-                 AIR: 'aeroporto', EXT: 'conexão externa'};
-    var labels = [];  // [marcador, prioridade] — quanto menor, mais cedo ganha espaço
+                 UNI: 'ensino', SPO: 'lazer', ZOO: 'lazer', CNV: 'eventos'};
+    var labels = [];  // [lat, lng, texto, prioridade] — quanto menor, mais cedo ganha espaço
     function label(p, isPoi) {
         var code = TYPES[p[6]];
         var tipo = code ? ' [' + (NAMES[code] || code) + ']' : '';
@@ -56,88 +52,89 @@ window.addEventListener('load', function () {
         var p = points[i], residents = p[2], jobs = p[3], total = residents + jobs;
         var share = total > 0 ? residents / total : 0.5;
         var kind = p[4];
-        if (kind === 3) {
-            var icon = L.divIcon({
-                className: 'poi-marker',
-                html: '<i></i><span>' + p[5] + '</span>',
-                iconSize: null
-            });
-            var marker = L.marker([p[0], p[1]], {icon: icon})
-                .bindTooltip(label(p, true)).addTo(groups.poi);
-            marker._labelText = p[5];
-            labels.push([marker, p[7]]);
-            continue;
-        }
+        if (kind === 2) { labels.push([p[0], p[1], p[5], p[7]]); }
         L.circleMarker([p[0], p[1]], {
-            radius: Math.min(1.5 + Math.sqrt(total) / 40.0, 12),
-            color: kind === 2 ? '#2f855a'
+            radius: kind === 2 ? 2 : Math.min(1.5 + Math.sqrt(total) / 40.0, 12),
+            color: kind === 2 ? '#c53030'
                  : share >= 0.6 ? '#2b6cb0'
                  : share <= 0.4 ? '#dd6b20' : '#6b46c1',
-            fill: true, fillOpacity: 0.55, weight: 0
-        }).bindTooltip(label(p, false)).addTo(groups[kind]);
+            fill: true, fillOpacity: kind === 2 ? 0.7 : 0.55, weight: 0
+        }).bindTooltip(label(p, kind === 2)).addTo(groups[kind]);
     }
-    // Milhares de equipamentos: escalonar por zoom não basta, porque os maiores ficam todos
-    // no centro e os nomes se empilham. Aqui o rótulo só aparece se couber — os mais
-    // importantes reservam seu espaço primeiro, o resto espera o próximo nível de zoom.
-    labels.sort(function (a, b) { return a[1] - b[1]; });
-    // largura estimada pelo texto: medir a caixa real de milhares de rótulos forçaria
-    // um reflow por elemento a cada movimento do mapa
+    // Milhares de equipamentos: os nomes se empilham se todos forem desenhados. Aqui os
+    // maiores reservam espaço primeiro e um rótulo só entra se a caixa dele couber.
+    labels.sort(function (a, b) { return a[3] - b[3]; });
+    // largura estimada pelo texto: medir a caixa real forçaria um reflow por elemento
     var CHAR_W = 7.0, PAD = 34, LABEL_H = 30, BUCKET = 120, MAX_LABELS = 45;
+    // os rótulos existem no DOM só enquanto estão na tela: manter um elemento por
+    // equipamento fazia o Leaflet reposicionar milhares de nós a cada zoom
+    var labelLayer = L.layerGroup().addTo(groups.poi);
+    var frame = null;
+
     function declutter() {
-        var buckets = {}, size = map.getSize(), shown = 0;
-        for (var i = 0; i < labels.length; i++) {
-            var marker = labels[i][0], element = marker._icon;
-            if (!element) { continue; }
-            if (shown >= MAX_LABELS) { element.classList.remove('named'); continue; }
-            var point = map.latLngToContainerPoint(marker.getLatLng());
-            var width = marker._labelText.length * CHAR_W + PAD;
+        frame = null;
+        labelLayer.clearLayers();
+        var buckets = {}, size = map.getSize(), bounds = map.getBounds(), shown = 0;
+        var south = bounds.getSouth(), north = bounds.getNorth();
+        var west = bounds.getWest(), east = bounds.getEast();
+        for (var i = 0; i < labels.length && shown < MAX_LABELS; i++) {
+            var item = labels[i], lat = item[0], lng = item[1];
+            // descarta fora da tela antes de projetar: é o filtro mais barato
+            if (lat < south || lat > north || lng < west || lng > east) { continue; }
+            var point = map.latLngToContainerPoint([lat, lng]);
+            var width = item[2].length * CHAR_W + PAD;
             var left = point.x + 9, top = point.y - 9;
             if (left < 0 || top < 0 || left + width > size.x || top + LABEL_H > size.y) {
-                element.classList.remove('named');
                 continue;
             }
-            // testa a caixa real contra as já aceitas; os buckets evitam comparar com todas
             var fits = true, keys = [];
-            for (var bx = Math.floor(left / BUCKET); bx <= Math.floor((left + width) / BUCKET);
-                 bx++) {
+            for (var bx = Math.floor(left / BUCKET);
+                 bx <= Math.floor((left + width) / BUCKET) && fits; bx++) {
                 for (var by = Math.floor(top / BUCKET);
-                     by <= Math.floor((top + LABEL_H) / BUCKET); by++) {
+                     by <= Math.floor((top + LABEL_H) / BUCKET) && fits; by++) {
                     var key = bx + ':' + by;
                     keys.push(key);
-                    var box = buckets[key] || [];
-                    for (var b = 0; b < box.length; b++) {
+                    var box = buckets[key];
+                    for (var b = 0; box && b < box.length; b++) {
                         var o = box[b];
                         if (left < o[2] && o[0] < left + width
-                            && top < o[3] && o[1] < top + LABEL_H) { fits = false; }
+                            && top < o[3] && o[1] < top + LABEL_H) { fits = false; break; }
                     }
                 }
             }
-            if (!fits) {
-                element.classList.remove('named');
-                continue;
-            }
+            if (!fits) { continue; }
             var rect = [left, top, left + width, top + LABEL_H];
             for (var k = 0; k < keys.length; k++) {
                 (buckets[keys[k]] = buckets[keys[k]] || []).push(rect);
             }
-            element.classList.add('named');
+            L.marker([lat, lng], {
+                icon: L.divIcon({className: 'poi-label',
+                                 html: '<span>' + item[2] + '</span>', iconSize: null}),
+                interactive: false, keyboard: false
+            }).addTo(labelLayer);
             shown++;
         }
     }
-    map.on('zoomend', declutter);
-    map.on('moveend', declutter);
+
+    // timer em vez de requestAnimationFrame: o rAF não dispara com a janela fora de foco,
+    // e aí os rótulos ficariam apagados até o mapa se mexer de novo
+    function schedule() {
+        if (frame) { clearTimeout(frame); }
+        frame = setTimeout(declutter, 60);
+    }
+
+    // os rótulos ficam no lugar enquanto o mapa se move — o Leaflet os arrasta junto, e
+    // apagá-los a cada movimento fazia piscar, já que um gesto dispara vários zooms
+    map.on('zoomend', schedule);
+    map.on('moveend', schedule);
+    map.on('overlayadd overlayremove', schedule);
     setTimeout(declutter, 0);
 });
 """
 
 _STAMP_CSS = """
 <style>
-.poi-marker i {
-    display: block; width: 7px; height: 7px; transform: translate(-50%, -50%) rotate(45deg);
-    background: #c53030; border: 1px solid #ffffff; opacity: 0.85;
-}
-.poi-marker span { display: none; }
-.poi-marker.named span {
+.poi-label span {
     display: inline-block; position: absolute; left: 9px; top: -9px;
     font: 600 11px/1.2 system-ui, sans-serif; color: #1a202c; white-space: nowrap;
     background: rgba(255, 255, 255, 0.92); border: 1px solid #a0aec0;
@@ -153,30 +150,10 @@ _STAMP_CSS = """
 """
 
 
-def _round_floats(value):
-    if isinstance(value, (list, tuple)):
-        return [_round_floats(v) for v in value]
-    return round(value, _COORD_DECIMALS) if isinstance(value, float) else value
-
-
-def _zone_outlines(zones) -> dict:
-    from shapely.geometry import mapping
-
-    features = []
-    for zone_id, geom in zip(zones.ids, zones.polygons, strict=True):
-        geometry = mapping(geom.simplify(_ZONE_SIMPLIFY, preserve_topology=True))
-        geometry["coordinates"] = _round_floats(geometry["coordinates"])
-        features.append({"type": "Feature", "geometry": geometry,
-                         "properties": {"zona": zone_id}})
-    return {"type": "FeatureCollection", "features": features}
-
-
 def _kind(point: dict) -> str:
-    """Camada do ponto: equipamento nomeado, conexão externa, moradia ou trabalho."""
+    """Camada do ponto: equipamento nomeado, moradia ou trabalho."""
     if point.get("name"):
         return "poi"
-    if point["id"].startswith("EXT_"):
-        return "gateway"
     return "home" if point.get("residents", 0) >= point.get("jobs", 0) else "work"
 
 
@@ -215,22 +192,16 @@ def _point_rows(points: list[dict]) -> list:
     return rows
 
 
-def write(points: list[dict], center: tuple[float, float], path: Path, zones=None) -> None:
+def write(points: list[dict], center: tuple[float, float], path: Path) -> None:
     import folium
 
     generated_at = datetime.now().astimezone()
+    # zoom contínuo: o Leaflet arredonda o zoom para múltiplos de zoom_snap, então no padrão
+    # qualquer fração de rolagem vira um nível inteiro e o gesto sobe em degraus
     m = folium.Map(location=[center[1], center[0]], zoom_start=10,
-                   tiles="cartodbpositron", prefer_canvas=True)
-
-    if zones is not None:
-        folium.GeoJson(
-            _zone_outlines(zones),
-            name="limites das zonas",
-            style_function=lambda _f: {"color": "#3182ce", "weight": 1, "fill": False,
-                                       "opacity": 0.5},
-            highlight_function=lambda _f: {"weight": 2.5, "color": "#1a365d"},
-            tooltip=folium.GeoJsonTooltip(fields=["zona"], aliases=["zona OD:"]),
-        ).add_to(m)
+                   tiles="cartodbpositron", prefer_canvas=True,
+                   zoom_snap=0, zoom_delta=1, wheel_px_per_zoom_level=12,
+                   wheel_debounce_time=20, zoom_animation=False)
 
     rows = _point_rows(points)
     counts = collections.Counter(row[4] for row in rows)

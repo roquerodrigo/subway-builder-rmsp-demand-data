@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from types import SimpleNamespace
 
 import pytest
 
-from demand_data import htmlmap, od
+from demand_data import htmlmap
 
 BASE_LNG, BASE_LAT = -46.60, -23.55
 
@@ -53,31 +52,12 @@ def render(tmp_path, monkeypatch):
     """Gera o mapa num arquivo temporário e devolve ``(html, path)``."""
     monkeypatch.setattr(htmlmap, "datetime", FrozenDatetime)
 
-    def _render(points, zones=None, name="mapa.html"):
+    def _render(points, name="mapa.html"):
         path = tmp_path / name
-        htmlmap.write(points, (BASE_LNG, BASE_LAT), path, zones=zones)
+        htmlmap.write(points, (BASE_LNG, BASE_LAT), path)
         return path.read_text(encoding="utf-8"), path
 
     return _render
-
-
-@pytest.fixture
-def zones(zones_shp):
-    return od.load_zones(zones_shp)
-
-
-def test_round_floats_arredonda_listas_aninhadas():
-    origem = [[[-46.601234567, -23.551234567]], [[-46.6, -23.5]]]
-
-    assert htmlmap._round_floats(origem) == [[[-46.60123, -23.55123]], [[-46.6, -23.5]]]
-
-
-def test_round_floats_converte_tuplas_em_listas():
-    assert htmlmap._round_floats(((-46.601234567, -23.551234567),)) == [[-46.60123, -23.55123]]
-
-
-def test_round_floats_preserva_valores_que_nao_sao_float():
-    assert htmlmap._round_floats([1, "zona", None, True]) == [1, "zona", None, True]
 
 
 def test_point_rows_inverte_lng_lat_e_arredonda():
@@ -91,27 +71,6 @@ def test_point_rows_assume_zero_sem_residents_e_jobs():
     assert htmlmap._point_rows([{"id": "z7h1", "location": [-46.6, -23.55]}]) == [
         [-23.55, -46.6, 0, 0, 0, 7, 0]
     ]
-
-
-def test_zone_outlines_gera_uma_feature_por_zona(zones):
-    outlines = htmlmap._zone_outlines(zones)
-
-    assert outlines["type"] == "FeatureCollection"
-    assert len(outlines["features"]) == len(zones.ids)
-    assert [f["properties"]["zona"] for f in outlines["features"]] == zones.ids
-    assert all(f["type"] == "Feature" for f in outlines["features"])
-
-
-def test_zone_outlines_arredonda_as_coordenadas():
-    from shapely.geometry import Polygon
-
-    poligono = Polygon([(-46.601234567, -23.551234567), (-46.591234567, -23.551234567),
-                        (-46.591234567, -23.541234567), (-46.601234567, -23.541234567)])
-    outlines = htmlmap._zone_outlines(SimpleNamespace(ids=[7], polygons=[poligono]))
-
-    coordenadas = outlines["features"][0]["geometry"]["coordinates"][0]
-    assert outlines["features"][0]["properties"]["zona"] == 7
-    assert all(valor == round(valor, 5) for par in coordenadas for valor in par)
 
 
 def test_regressao_circulos_criados_dentro_do_listener_de_load(render):
@@ -155,39 +114,22 @@ def test_html_fica_bem_abaixo_de_700_bytes_por_ponto(render):
     assert path.stat().st_size / 5000 < 200
 
 
-def test_write_sem_zonas_nao_desenha_os_limites(render):
-    html, _ = render(make_points(2))
-
-    assert "limites das zonas" not in html
-    assert "moradia (" in html
-
-
-def test_write_com_zonas_desenha_os_limites(render, zones):
-    html, _ = render(make_points(2), zones=zones)
-
-    assert "limites das zonas" in html
-    assert "zona OD:" in html
-    assert '"zona": 1' in html.replace("&quot;", '"')
-
-
 def test_kind_separa_as_camadas_do_mapa():
-    poi = {"id": "AIR_Congonhas", "name": "Congonhas", "residents": 0, "jobs": 900}
-    gateway = {"id": "EXT_N-46.6_-23.2", "residents": 0, "jobs": 500}
+    poi = {"id": "SCH_Colegio", "name": "Colégio", "residents": 0, "jobs": 900}
     casa = {"id": "z1h1", "residents": 800, "jobs": 0}
     trabalho = {"id": "z1w1", "residents": 0, "jobs": 800}
     assert htmlmap._kind(poi) == "poi"
-    assert htmlmap._kind(gateway) == "gateway"
     assert htmlmap._kind(casa) == "home"
     assert htmlmap._kind(trabalho) == "work"
 
 
 def test_point_rows_carrega_nome_e_camada():
-    pontos = [{"id": "AIR_X", "name": "Aeroporto X", "location": [-46.6, -23.5],
-               "residents": 0, "jobs": 700}]
+    pontos = [{"id": "SCH_X", "name": "Colégio X", "location": [-46.6, -23.5],
+               "residents": 0, "jobs": 700, "type": "SCH"}]
     linha = htmlmap._point_rows(pontos)[0]
-    assert linha[4] == 3, "camada dos equipamentos"
-    assert linha[5] == "Aeroporto X"
-    assert linha[6] == htmlmap._TYPE_INDEX[""], "sem tipo declarado"
+    assert linha[4] == 2, "camada dos equipamentos"
+    assert linha[5] == "Colégio X"
+    assert linha[6] == htmlmap._TYPE_INDEX["SCH"]
     assert linha[7] == 0, "prioridade do rótulo: o maior vem primeiro"
 
 
@@ -195,15 +137,15 @@ def test_mapa_cria_uma_camada_por_tipo(tmp_path):
     pontos = [
         {"id": "z1h1", "location": [-46.6, -23.5], "residents": 100, "jobs": 0},
         {"id": "z1w1", "location": [-46.5, -23.5], "residents": 0, "jobs": 100},
-        {"id": "EXT_N-46.6_-23.2", "location": [-46.6, -23.2], "residents": 0, "jobs": 50},
         {"id": "SPO_Arena", "name": "Arena", "location": [-46.4, -23.5],
          "residents": 0, "jobs": 90},
     ]
     destino = tmp_path / "mapa.html"
     htmlmap.write(pontos, (-46.5, -23.5), destino)
     html = destino.read_text(encoding="utf-8")
-    for rotulo in ("moradia (1)", "trabalho (1)", "externas (1)", "equipamentos (1)"):
+    for rotulo in ("moradia (1)", "destinos (1)", "equipamentos (1)"):
         assert rotulo in html
+    assert "conexões externas" not in html
 
 
 def test_mapa_so_mostra_rotulo_que_cabe(tmp_path):
@@ -213,13 +155,31 @@ def test_mapa_so_mostra_rotulo_que_cabe(tmp_path):
     destino = tmp_path / "mapa.html"
     htmlmap.write(pontos, (-46.5, -23.5), destino)
     html = destino.read_text(encoding="utf-8")
-    assert ".poi-marker span { display: none; }" in html
-    assert ".poi-marker.named span" in html
+    assert ".poi-label span" in html
     assert "MAX_LABELS" in html
     assert "labels.sort" in html, "os maiores reservam espaço primeiro"
 
 
-def test_point_rows_ordena_a_prioridade_pela_demanda(tmp_path):
+def test_regressao_rotulos_nascem_e_morrem_com_a_tela(tmp_path):
+    """Um elemento por equipamento fazia o Leaflet remexer milhares de nós a cada zoom.
+
+    Só os rótulos exibidos podem existir no DOM, e o recálculo espera o mapa parar:
+    refazê-lo a cada evento intermediário travava o zoom e piscava a tela.
+    """
+    pontos = [{"id": "SPO_Arena", "name": "Arena", "location": [-46.4, -23.5],
+               "residents": 0, "jobs": 90}]
+    destino = tmp_path / "mapa.html"
+    htmlmap.write(pontos, (-46.5, -23.5), destino)
+    bloco = listener_block(destino.read_text(encoding="utf-8"))
+
+    assert "L.marker(" in bloco.split("function declutter")[1], "rótulo criado sob demanda"
+    assert "L.marker(" not in bloco.split("function declutter")[0], "nenhum marcador fixo"
+    assert "labelLayer.clearLayers()" in bloco
+    assert "setTimeout(declutter, 60)" in bloco
+    assert "zoomstart" not in bloco, "apagar o rótulo a cada movimento faz piscar"
+
+
+def test_point_rows_ordena_a_prioridade_pela_demanda():
     pontos = [
         {"id": "SPO_Pequeno", "name": "Pequeno", "location": [-46.4, -23.5],
          "residents": 0, "jobs": 10},
@@ -230,7 +190,19 @@ def test_point_rows_ordena_a_prioridade_pela_demanda(tmp_path):
     assert linhas["Grande"] < linhas["Pequeno"]
 
 
+def test_regressao_zoom_e_continuo(render):
+    """Com ``zoomSnap`` inteiro o Leaflet arredonda para cima qualquer fração de rolagem.
+
+    Um gesto só virava três saltos de um nível, parando entre eles: uma escada visual.
+    """
+    html, _ = render(make_points(2))
+
+    assert '"zoomSnap": 0' in html
+    assert '"zoomDelta": 1' in html, "os botões + e − seguem andando um nível"
+    assert '"zoomAnimation": false' in html, "esperar a transição atrasa o passo seguinte"
+
+
 def test_zone_of_extrai_o_numero_da_zona():
     assert htmlmap._zone_of("z73w12") == 73
-    assert htmlmap._zone_of("z301hf5") == 301
-    assert htmlmap._zone_of("EXT_N-46.6") == 0
+    assert htmlmap._zone_of("z301h5") == 301
+    assert htmlmap._zone_of("SCH_Colegio") == 0

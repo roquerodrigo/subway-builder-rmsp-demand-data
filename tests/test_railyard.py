@@ -14,11 +14,11 @@ def sample():
     points = [
         {"id": "z1h1", "location": [-46.6, -23.5], "jobs": 0, "residents": 1000},
         {"id": "z1w1", "location": [-46.5, -23.5], "jobs": 900, "residents": 0},
-        {"id": "EXT_N-46.6_-23.2", "location": [-46.6, -23.2], "jobs": 100, "residents": 0},
+        {"id": "z2w1", "location": [-46.4, -23.5], "jobs": 100, "residents": 0},
     ]
     pops = [
         {"id": "p1", "size": 900, "residenceId": "z1h1", "jobId": "z1w1"},
-        {"id": "p2", "size": 100, "residenceId": "z1h1", "jobId": "EXT_N-46.6_-23.2"},
+        {"id": "p2", "size": 100, "residenceId": "z1h1", "jobId": "z2w1"},
     ]
     return points, pops
 
@@ -49,22 +49,29 @@ def test_config_omite_pais_vazio():
 def test_description_resume_a_demanda():
     points, pops = sample()
     text = railyard.build_description(points, pops, datetime(2026, 7, 19))
-    assert "| População | 1.000 |" in text
-    assert "| Conexões externas | 1 (100 pessoas) |" in text
+    assert "| Viagens/dia | 1.000 |" in text
+    assert "| Destinos nomeados | 0 |" in text
     assert "19/07/2026" in text
+
+
+def test_description_conta_os_destinos_nomeados():
+    points, pops = sample()
+    points[1]["name"] = "Escola Central"
+    text = railyard.build_description(points, pops, datetime(2026, 7, 19))
+    assert "| Destinos nomeados | 1 |" in text
 
 
 def test_description_nao_estraga_a_pontuacao_do_texto():
     """Formatar milhares trocando toda vírgula por ponto quebrava as frases."""
     points, pops = sample()
     text = railyard.build_description(points, pops, datetime(2026, 7, 19))
-    assert "Metrô-SP, com a densidade" in text
-    assert "compras, saúde, lazer" in text
+    assert "Metrô-SP, cada uma geolocalizada" in text
+    assert "escola, hospital, shopping, parque" in text
 
 
 def test_description_aguenta_demanda_vazia():
     text = railyard.build_description([], [], datetime(2026, 7, 19))
-    assert "| População | 0 |" in text
+    assert "| Viagens/dia | 0 |" in text
 
 
 def test_write_grava_os_dois_arquivos(tmp_path):

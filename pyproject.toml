@@ -1,19 +1,16 @@
 [project]
 name = "subway-builder-rmsp-demand-data"
-description = "Gera pops de demanda (Subway Builder / depot) a partir da Pesquisa OD 2023 do Metrô-SP"
-version = "1.0.0"
+description = "Gera pops de demanda (Subway Builder / depot) a partir das viagens da Pesquisa OD 2023"
+version = "2.0.0"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "typer",          # CLI
-    "pyshp",          # shapefile (zonas OD)
-    "dbfread",        # DBF (microdados OD)
-    "pyproj",         # reprojeta Córrego Alegre UTM 23S -> WGS84
-    "shapely",        # point-in-polygon (zonas) + geometria
-    "numpy",          # amostragem ponderada
+    "pyarrow",        # leitura do parquet de viagens
+    "shapely",        # geometria (contorno e proximidade dos equipamentos)
+    "numpy",          # repartição inteira ao fatiar pops
     "folium",         # mapa HTML
     "python-dotenv",  # config via .env
-    "certifi",        # CA bundle p/ o FTP-over-HTTPS do IBGE (cadeia incompleta)
 ]
 
 [project.scripts]
@@ -31,6 +28,7 @@ dev = ["ruff", "pytest", "pytest-cov"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "--cov=demand_data --cov-report=term-missing --cov-fail-under=90"
 
 [tool.coverage.report]
