@@ -59,7 +59,7 @@ class Settings:
     # viagens já geolocalizadas do repositório de dados (uma linha por viagem)
     flow_url: str = _env(
         "DEMAND_FLOW_URL",
-        "https://www.rodrigoroque.dev/transporte-sp-origem-destino/dados/fluxos.parquet",
+        "https://www.rodrigoroque.dev/transporte-sp-origem-destino/dados/fluxos_10k.parquet",
     )
     # OpenStreetMap: coordenadas dos equipamentos nomeados
     overpass_url: str = _env("DEMAND_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
