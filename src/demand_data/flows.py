@@ -105,8 +105,10 @@ def load_flows(path: Path | None = None) -> list[Flow]:
     import pyarrow.parquet as pq
 
     path = path or settings.flows_parquet
-    table = pq.read_table(path, columns=list(_COLUMNS))
-    flows = list(parse_rows(table.to_pylist()))
+    # lê em lotes para não materializar todas as linhas como dicts de uma vez
+    flows: list[Flow] = []
+    for batch in pq.ParquetFile(path).iter_batches(columns=list(_COLUMNS)):
+        flows.extend(parse_rows(batch.to_pylist()))
     total = sum(f.trips for f in flows)
     log.info("viagens: %d geolocalizadas | Σ trips=%d viagens/dia", len(flows), total)
     return flows

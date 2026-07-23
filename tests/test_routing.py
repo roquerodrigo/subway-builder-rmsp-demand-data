@@ -107,6 +107,15 @@ def test_fill_sem_pops_pendentes(osrm):
     assert routing.fill([], [], osrm["url"]) == 0
 
 
-def test_default_url_vem_da_configuracao(configure):
-    configure(routing, osrm_url="http://exemplo:5000")
-    assert routing.default_url() == "http://exemplo:5000"
+def test_fill_roteia_o_par_uma_vez_para_fatias_repetidas(osrm):
+    """Fatias de um pop grande dividem o mesmo par: uma consulta serve a todas."""
+    points, _ = points_and_pops()
+    pops = [
+        {"id": "p1", "size": 250, "residenceId": "casa", "jobId": "trabalho",
+         "drivingSeconds": 0, "drivingDistance": 0},
+        {"id": "p1_1", "size": 250, "residenceId": "casa", "jobId": "trabalho",
+         "drivingSeconds": 0, "drivingDistance": 0},
+    ]
+    assert routing.fill(points, pops, osrm["url"]) == 2
+    assert osrm["calls"] == 1
+    assert all(p["drivingDistance"] == 12345 for p in pops)

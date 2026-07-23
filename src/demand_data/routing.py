@@ -21,9 +21,8 @@ import logging
 import math
 import urllib.error
 import urllib.request
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-
-from demand_data.config import settings
 
 log = logging.getLogger(__name__)
 
@@ -71,14 +70,20 @@ def fill(points: list[dict], pops: list[dict], base_url: str, workers: int = 8) 
     if not pending:
         return 0
 
-    def solve(pop: dict) -> None:
-        distance, seconds = route(
-            location[pop["residenceId"]], location[pop["jobId"]], base_url
-        )
-        pop["drivingDistance"], pop["drivingSeconds"] = distance, seconds
+    # um pop por par casa↔destino é o comum, mas as fatias de split_oversized repetem o par;
+    # rotear por par único evita refazer a mesma consulta para cada fatia
+    by_pair: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for pop in pending:
+        by_pair[(pop["residenceId"], pop["jobId"])].append(pop)
+
+    def solve(pair: tuple[str, str]) -> None:
+        residence, job = pair
+        distance, seconds = route(location[residence], location[job], base_url)
+        for pop in by_pair[pair]:
+            pop["drivingDistance"], pop["drivingSeconds"] = distance, seconds
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        list(pool.map(solve, pending))
+        list(pool.map(solve, by_pair))
 
     routed = sum(1 for p in pending if p["drivingSeconds"] > 0)
     distances = [p["drivingDistance"] for p in pending if p["drivingDistance"] > 0]
@@ -89,7 +94,3 @@ def fill(points: list[dict], pops: list[dict], base_url: str, workers: int = 8) 
         sorted(p["drivingSeconds"] for p in pending)[len(pending) // 2] / 60,
     )
     return routed
-
-
-def default_url() -> str:
-    return settings.osrm_url
