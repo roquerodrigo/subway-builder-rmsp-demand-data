@@ -104,6 +104,21 @@ def test_generate_quantiza_enderecos_proximos(configure):
     assert homes[0]["residents"] == 150
 
 
+def test_generate_separa_destinos_de_tipos_diferentes_na_mesma_celula(configure):
+    """Escola e loja na mesma célula não viram um ponto só: o tipo entra na chave, então nenhum
+    herda o tipo do outro."""
+    configure(pops, density_cell=0.01)
+    school = (BASE_LNG + 0.05, BASE_LAT)
+    shop = (BASE_LNG + 0.0501, BASE_LAT)
+    points, _ = pops.generate([
+        flow(1, 2, 4, "Educação", 40, A, school),
+        flow(1, 2, 5, "Compras", 30, A, shop),
+    ])
+    work = [p for p in points if p["jobs"] > 0]
+    assert len(work) == 2
+    assert {p.get("type") for p in work} == {"SCH", "SHP"}
+
+
 def test_generate_liga_todo_pop_a_pontos_existentes():
     points, generated = pops.generate([
         flow(1, 2, 3, "Trabalho Serviços", 100, A, B),

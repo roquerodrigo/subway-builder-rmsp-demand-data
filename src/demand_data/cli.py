@@ -51,6 +51,7 @@ def generate() -> None:
 
     points, poplist = pops.generate(flows.load_flows())
     pois.adopt(points, poplist)
+    pois.tag_untyped(points, poplist)
     points = pops.aggregate(points, poplist)
 
     if settings.osrm_url:

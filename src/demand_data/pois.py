@@ -1,9 +1,9 @@
-"""Equipamentos nomeados: aeroportos, campi, estádios, shoppings, hospitais, parques.
+"""Equipamentos nomeados: campi, estádios, shoppings, hospitais, parques.
 
 As viagens dizem para qual coordenada e por qual motivo cada uma vai, não para qual
 equipamento. Aqui cada destino tipado adota a identidade do equipamento real **mais próximo**
-que atende o seu motivo — o ponto de saúde perto de Congonhas passa a ser o hospital que o
-serve, com o nome e o tipo que o Subway Builder mostra.
+que atende o seu motivo — um ponto de saúde passa a ser o hospital que o serve, com o nome e o
+tipo que o Subway Builder mostra.
 
 Nada aqui é estimado à mão: as coordenadas, os nomes e os contornos vêm do **OpenStreetMap**
 (com o ``osm_id`` para conferência). Entre dois equipamentos igualmente próximos, o de maior
@@ -11,8 +11,8 @@ porte (área do contorno) desempata. Nenhum ponto é criado nem tem demanda alte
 origem e o tamanho de cada viagem continuam os observados; o destino só ganha identidade.
 
 O **id** é o que carrega o tipo para o jogo: o depot lê ``id.split("_")[0]``. Um destino
-adotado passa a se chamar ``AIR_Congonhas``, e os pops que apontavam para o id antigo são
-reapontados.
+adotado passa a se chamar ``HOS_HospitalDasClinicas``, e os pops que apontavam para o id
+antigo são reapontados.
 """
 
 from __future__ import annotations
@@ -21,22 +21,18 @@ import logging
 from collections import defaultdict
 from pathlib import Path
 
+from demand_data import pointid
 from demand_data.config import settings
+from demand_data.coordinates import CoordinateRegistry
+from demand_data.taxonomy import ACCEPTED_EQUIPMENT, EQUIPMENT_CODES
 
 log = logging.getLogger(__name__)
 
-_NUDGE = 1e-5  # ~1 m: separa coordenada duplicada quando dois destinos caem no mesmo lugar
-
-# que tipo de equipamento do OSM pode dar identidade a um destino de cada place type. Quem
-# vai por educação chega numa escola ou campus; por lazer, num parque, estádio, zoo ou centro
-# de eventos.
+# que tipo de equipamento do OSM pode dar identidade a um destino de cada place type
 ACCEPTS: dict[str, frozenset[str]] = {
-    "SCH": frozenset({"SCH", "UNI"}),
-    "HOS": frozenset({"HOS"}),
-    "SHP": frozenset({"SHP"}),
-    "PRK": frozenset({"PRK", "ZOO", "SPO", "CNV"}),
+    place: frozenset(codes) for place, codes in ACCEPTED_EQUIPMENT.items()
 }
-_POI_TYPES = frozenset().union(*ACCEPTS.values())
+_POI_TYPES = frozenset(EQUIPMENT_CODES)
 
 
 def _identifier(name: str) -> str:
@@ -88,32 +84,67 @@ def _assign_ids(catalogue: list[dict]) -> None:
         poi["id"] = point_id
 
 
+class _EquipmentIndex:
+    """Índice espacial dos equipamentos utilizáveis, com busca do compatível mais próximo."""
+
+    def __init__(self, catalogue: list[dict]) -> None:
+        self._usable = [poi for poi in catalogue if poi["type"] in _POI_TYPES]
+        self._tree = None
+        if not self._usable:
+            return
+        _assign_ids(self._usable)
+        for poi in self._usable:
+            poi["area"] = area(poi.get("ring") or [])
+        from shapely import STRtree
+        from shapely import points as as_points
+
+        self._geoms = as_points([(poi["location"][0], poi["location"][1])
+                                 for poi in self._usable])
+        self._tree = STRtree(self._geoms)
+
+    def __bool__(self) -> bool:
+        return self._tree is not None
+
+    def nearest(self, location, accepts: frozenset[str], radius: float,
+                taken: set[str]) -> dict | None:
+        """Equipamento compatível mais próximo dentro do raio (desempate por porte), ou None."""
+        from shapely import box
+        from shapely.geometry import Point
+
+        origin = Point(location[0], location[1])
+        # a janela é um quadrado (a STRtree só usa o envelope); o círculo real do raio é o
+        # filtro de distância abaixo, senão adotaríamos até radius·√2 além do teto
+        window = box(origin.x - radius, origin.y - radius, origin.x + radius, origin.y + radius)
+        best, best_key = None, None
+        for i in self._tree.query(window):
+            poi = self._usable[i]
+            if poi["id"] in taken or poi["type"] not in accepts:
+                continue
+            distance = origin.distance(self._geoms[i])
+            if distance > radius:
+                continue
+            key = (distance, -poi["area"])
+            if best_key is None or key < best_key:
+                best, best_key = poi, key
+        return best
+
+
 def adopt(points: list[dict], pops: list[dict], catalogue: list[dict] | None = None) -> int:
     """Dá a cada destino tipado o equipamento compatível mais próximo (desempate por porte).
 
     Reaponta os pops do destino para o novo id e renomeia o ponto. Nenhum ponto é criado.
     """
     catalogue = load() if catalogue is None else catalogue
-    usable = [poi for poi in catalogue if poi["type"] in _POI_TYPES]
-    if not usable:
+    index = _EquipmentIndex(catalogue)
+    if not index:
         return 0
-    _assign_ids(usable)
-    for poi in usable:
-        poi["area"] = area(poi.get("ring") or [])
-
-    from shapely import STRtree
-    from shapely import points as as_points
-    from shapely.geometry import Point
-
-    geoms = as_points([(poi["location"][0], poi["location"][1]) for poi in usable])
-    tree = STRtree(geoms)
 
     jobs_by_point: dict[str, list[dict]] = defaultdict(list)
     for pop in pops:
         jobs_by_point[pop["jobId"]].append(pop)
 
     radius = settings.poi_snap_m / settings.m_per_deg_lat
-    used_loc = {tuple(p["location"]) for p in points}
+    coordinates = CoordinateRegistry(p["location"] for p in points)
     taken: set[str] = set()
     adopted = 0
 
@@ -123,31 +154,41 @@ def adopt(points: list[dict], pops: list[dict], catalogue: list[dict] | None = N
     dests.sort(key=lambda p: -sum(pop["size"] for pop in jobs_by_point.get(p["id"], ())))
 
     for point in dests:
-        accepts = ACCEPTS[point["type"]]
-        origin = Point(point["location"][0], point["location"][1])
-        best, best_key = None, None
-        for i in tree.query(origin.buffer(radius)):
-            poi = usable[i]
-            if poi["id"] in taken or poi["type"] not in accepts:
-                continue
-            key = (origin.distance(geoms[i]), -poi["area"])
-            if best_key is None or key < best_key:
-                best, best_key = poi, key
-        if best is None:
+        equipment = index.nearest(point["location"], ACCEPTS[point["type"]], radius, taken)
+        if equipment is None:
             continue
-        taken.add(best["id"])
-        lng, lat = round(best["location"][0], 6), round(best["location"][1], 6)
-        while (lng, lat) in used_loc:
-            lng = round(lng + _NUDGE, 6)
-        used_loc.add((lng, lat))
+        taken.add(equipment["id"])
         previous = point["id"]
-        point["id"] = best["id"]
-        point["location"] = [lng, lat]
-        point["name"] = best["name"]
-        point["osmId"] = best["osm_id"]
-        point["type"] = best["type"]
+        point["id"] = equipment["id"]
+        point["location"] = coordinates.place(equipment["location"][0], equipment["location"][1])
+        point["name"] = equipment["name"]
+        point["osmId"] = equipment["osm_id"]
+        point["type"] = equipment["type"]
         for pop in jobs_by_point.get(previous, ()):
-            pop["jobId"] = best["id"]
+            pop["jobId"] = equipment["id"]
         adopted += 1
     log.info("equipamentos adotados: %d destinos nomeados", adopted)
     return adopted
+
+
+def tag_untyped(points: list[dict], pops: list[dict]) -> int:
+    """Prefixa o id dos destinos tipados que não adotaram equipamento (sem ``name``).
+
+    O jogo lê o tipo pelo prefixo do id (``id.split("_")[0]``), não pelo campo ``type``; sem o
+    prefixo, uma escola sem equipamento nomeado por perto chegaria como demanda sem tipo.
+    Roda depois de :func:`adopt` e reaponta os pops do destino. Devolve quantos foram."""
+    jobs_by_point: dict[str, list[dict]] = defaultdict(list)
+    for pop in pops:
+        jobs_by_point[pop["jobId"]].append(pop)
+
+    tagged = 0
+    for point in points:
+        if not point.get("type") or point.get("name"):
+            continue
+        previous = point["id"]
+        point["id"] = pointid.with_type(point["type"], previous)
+        for pop in jobs_by_point.get(previous, ()):
+            pop["jobId"] = point["id"]
+        tagged += 1
+    log.info("destinos tipados sem equipamento: %d marcados pelo tipo", tagged)
+    return tagged

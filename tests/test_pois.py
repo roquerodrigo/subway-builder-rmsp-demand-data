@@ -70,6 +70,17 @@ def test_adopt_ignora_destino_fora_do_raio():
     assert points[1]["id"] == "z2w0"
 
 
+def test_adopt_rejeita_equipamento_na_diagonal_do_raio():
+    """O canto diagonal do quadrado de busca está além do raio real (~500 m): dentro da janela
+    da STRtree, mas rejeitado pelo filtro de distância — senão adotaríamos até radius·√2."""
+    points, pops_list = demand("SCH")
+    diagonal = {"location": [DEST[0] + 0.0042, DEST[1] + 0.0042], "type": "SCH",
+                "osm_id": "9", "name": "Diagonal", "ring": []}
+    adopted = pois.adopt(points, pops_list, [diagonal])
+    assert adopted == 0
+    assert points[1]["id"] == "z2w0"
+
+
 def test_adopt_desempata_por_porte():
     points, pops_list = demand("SHP")
     catalogue = [
@@ -117,6 +128,30 @@ def test_adopt_desambigua_homonimos_e_afasta_colisao():
     assert ids == {"SCH_Escola", "SCH_Escola_2"}, "homônimo desempata pelo osm_id"
     coords = [tuple(p["location"]) for p in points]
     assert len(set(coords)) == len(coords), "a colisão de coordenada foi afastada"
+
+
+def test_tag_untyped_prefixa_o_id_do_destino_nao_adotado():
+    """Destino tipado sem equipamento (sem name) leva o código do tipo no id e os pops o
+    acompanham, para o jogo reconhecer o tipo pelo prefixo."""
+    points, pops_list = demand("SCH")
+    tagged = pois.tag_untyped(points, pops_list)
+    assert tagged == 1
+    assert points[1]["id"] == "SCH_z2w0"
+    assert pops_list[0]["jobId"] == "SCH_z2w0"
+
+
+def test_tag_untyped_nao_toca_destino_ja_adotado():
+    points, pops_list = demand("SCH")
+    points[1]["name"] = "Escola Adotada"
+    assert pois.tag_untyped(points, pops_list) == 0
+    assert points[1]["id"] == "z2w0"
+
+
+def test_tag_untyped_ignora_ponto_sem_tipo():
+    points, pops_list = demand("SCH")
+    del points[1]["type"]
+    assert pois.tag_untyped(points, pops_list) == 0
+    assert points[1]["id"] == "z2w0"
 
 
 def test_load_pula_linha_malformada(tmp_path, configure):

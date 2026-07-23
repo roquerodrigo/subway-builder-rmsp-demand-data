@@ -18,12 +18,12 @@ from collections.abc import Iterable
 
 import numpy as np
 
+from demand_data import pointid
 from demand_data.config import settings
+from demand_data.coordinates import CoordinateRegistry
 from demand_data.flows import Flow, orient
 
 log = logging.getLogger(__name__)
-
-_NUDGE = 1e-5  # ~1 m: separa coordenada duplicada (fallback raro)
 
 
 def _largest_remainder(weights, total: int) -> list[int]:
@@ -50,18 +50,20 @@ def generate(flows: Iterable[Flow]):
     """
     cell = settings.density_cell
     points: dict[str, dict] = {}
-    cell_id: dict[tuple[int, str, int, int], str] = {}
+    cell_id: dict[tuple[int, str, int, int, str | None], str] = {}
     counters: dict[tuple[int, str], int] = defaultdict(int)
 
     def point_of(zone: int, role: str, coord: tuple[float, float],
                  place_type: str | None = None) -> str:
         gx, gy = round(coord[0] / cell), round(coord[1] / cell)
-        key = (zone, role, gx, gy)
+        # o tipo entra na chave: destinos de tipos diferentes na mesma célula viram pontos
+        # distintos, em vez de um deles herdar o tipo do outro
+        key = (zone, role, gx, gy, place_type)
         pid = cell_id.get(key)
         if pid is None:
             index = counters[(zone, role)]
             counters[(zone, role)] += 1
-            pid = f"z{zone}{role}{index}"
+            pid = pointid.generic(zone, role, index)
             cell_id[key] = pid
             points[pid] = {"id": pid, "location": [round(coord[0], 6), round(coord[1], 6)],
                            "jobs": 0, "residents": 0, "popIds": []}
@@ -100,13 +102,9 @@ def _separate_shared_cells(points: dict[str, dict]) -> None:
     Uma casa e um destino podem cair na mesma célula (têm ids distintos, papel único), mas
     coordenada duplicada quebra o jogo — então a colisão é resolvida no mapa.
     """
-    used: set[tuple[float, float]] = set()
+    registry = CoordinateRegistry()
     for point in points.values():
-        x, y = point["location"]
-        while (x, y) in used:
-            x = round(x + _NUDGE, 6)
-        used.add((x, y))
-        point["location"] = [x, y]
+        point["location"] = registry.place(point["location"][0], point["location"][1])
 
 
 def merge_identical_commutes(pops: list[dict]) -> list[dict]:

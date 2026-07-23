@@ -34,7 +34,10 @@ def pipeline(monkeypatch):
 
     monkeypatch.setattr(cli, "sources", SimpleNamespace(acquire=record("sources.acquire")))
     monkeypatch.setattr(cli, "railyard", SimpleNamespace(write=record("railyard.write")))
-    monkeypatch.setattr(cli, "pois", SimpleNamespace(adopt=record("pois.adopt", 0)))
+    monkeypatch.setattr(cli, "pois", SimpleNamespace(
+        adopt=record("pois.adopt", 0),
+        tag_untyped=record("pois.tag_untyped", 0),
+    ))
     monkeypatch.setattr(cli, "routing", SimpleNamespace(fill=record("routing.fill", 0)))
     monkeypatch.setattr(cli, "flows",
                         SimpleNamespace(load_flows=record("flows.load_flows", loaded)))
