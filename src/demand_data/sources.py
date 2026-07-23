@@ -22,8 +22,8 @@ log = logging.getLogger(__name__)
 _OUTLINE_TOLERANCE = 0.0002  # ~20 m: enxuga o contorno sem perder o formato
 
 
-def _mb(p: Path) -> float:
-    return p.stat().st_size / 1e6
+def _megabytes(path: Path) -> float:
+    return path.stat().st_size / 1e6
 
 
 def _download(url: str, dest: Path) -> None:
@@ -47,7 +47,7 @@ def download_flows() -> None:
     _download(settings.flow_url, settings.flows_parquet)
     if settings.flows_parquet.exists():
         log.info("viagens: %s (%.1f MB)", settings.flows_parquet.name,
-                 _mb(settings.flows_parquet))
+                 _megabytes(settings.flows_parquet))
 
 
 # tipos do OSM -> código da taxonomia do depot. Só o que gera deslocamento próprio.
@@ -58,7 +58,6 @@ def download_flows() -> None:
 # grande e de forma irregular — campus, parque, aeroporto. Escola e hospital são compactos e
 # cabem no raio mínimo, e pedir a geometria de milhares deles derruba o endpoint público.
 POI_QUERIES: tuple[tuple[str, str, bool], ...] = (
-    ("AIR", '["aeroway"="aerodrome"]["iata"]', True),
     ("UNI", '["amenity"="university"]["name"]', True),
     ("PRK", '["leisure"="park"]["wikidata"]', True),
     ("SPO", '["leisure"="stadium"]["name"]', True),
@@ -69,7 +68,6 @@ POI_QUERIES: tuple[tuple[str, str, bool], ...] = (
     ("SHP", '["shop"="mall"]["name"]', True),
     ("CNV", '["amenity"="conference_centre"]["name"]', True),
     ("CNV", '["amenity"="exhibition_centre"]["name"]', True),
-    ("EXT", '["amenity"="bus_station"]["name"]', True),
 )
 
 
@@ -90,11 +88,26 @@ def outline(element: dict) -> list[float]:
     if not shape.is_valid:
         shape = shape.buffer(0)
     shape = shape.simplify(_OUTLINE_TOLERANCE, preserve_topology=True)
-    coords = list(getattr(shape, "exterior", shape).coords) if not shape.is_empty else []
+    polygon = _largest_polygon(shape)
+    if polygon is None:
+        return []
     flat = []
-    for lng, lat in coords:
+    for lng, lat in polygon.exterior.coords:
         flat += [round(lng, 6), round(lat, 6)]
     return flat
+
+
+def _largest_polygon(shape):
+    """Maior componente Polygon da geometria: ``buffer(0)`` pode devolver um MultiPolygon,
+    e ler ``.coords`` de uma geometria multipartes levanta ``NotImplementedError``."""
+    from shapely.geometry import Polygon
+
+    if shape.is_empty:
+        return None
+    if isinstance(shape, Polygon):
+        return shape
+    parts = [g for g in getattr(shape, "geoms", ()) if isinstance(g, Polygon) and not g.is_empty]
+    return max(parts, key=lambda g: g.area) if parts else None
 
 
 def parse_overpass(elements, codes: dict[int, str]):

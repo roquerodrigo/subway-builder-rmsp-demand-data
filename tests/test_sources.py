@@ -34,10 +34,10 @@ class FakeResponse:
         return False
 
 
-def test_mb_reports_the_file_size(tmp_path):
+def test_megabytes_reports_the_file_size(tmp_path):
     path = tmp_path / "arquivo.bin"
     path.write_bytes(b"\0" * 2_500_000)
-    assert sources._mb(path) == pytest.approx(2.5)
+    assert sources._megabytes(path) == pytest.approx(2.5)
 
 
 def test_download_writes_the_response_in_chunks(tmp_path, monkeypatch):
@@ -166,6 +166,22 @@ def test_outline_ignora_geometria_curta():
     assert sources.outline({}) == []
 
 
+def test_outline_lida_com_geometria_multipartes():
+    """Anel em forma de 8: o buffer(0) o parte em MultiPolygon; pega-se o maior componente em
+    vez de estourar ao ler as coordenadas de uma geometria multipartes."""
+    figura_oito = [(0, 0), (2, 0), (1, 1), (2, 2), (0, 2), (1, 1)]
+    element = {"geometry": [{"lon": x, "lat": y} for x, y in figura_oito]}
+    ring = sources.outline(element)
+    assert len(ring) >= 6 and len(ring) % 2 == 0
+
+
+def test_outline_descarta_geometria_degenerada():
+    """Contorno colinear não tem área: o buffer(0) o esvazia e o contorno sai vazio."""
+    element = {"geometry": [{"lon": -46.60, "lat": -23.50}, {"lon": -46.58, "lat": -23.50},
+                            {"lon": -46.56, "lat": -23.50}]}
+    assert sources.outline(element) == []
+
+
 def test_pois_pula_quando_ja_existe(configure, tmp_path, caplog):
     settings = configure(sources, sources_dir=tmp_path)
     settings.pois_csv.write_text("-46.6,-23.5,AIR,1,X\n", encoding="utf-8")
@@ -176,16 +192,16 @@ def test_pois_pula_quando_ja_existe(configure, tmp_path, caplog):
 
 def test_pois_baixa_e_escreve_o_csv(configure, tmp_path, monkeypatch):
     settings = configure(sources, sources_dir=tmp_path, bbox=(-47.0, -24.0, -45.0, -23.0))
-    # o Overpass responde uma vez por tipo; só a consulta de aeroporto devolve algo
-    aeroporto = {"elements": [{"id": 1, "tags": {"aeroway": "aerodrome", "name": "Aeroporto X"},
-                               "lat": -23.5, "lon": -46.6}]}
-    respostas = iter([json.dumps(aeroporto).encode()])
+    # o Overpass responde uma vez por tipo; só a primeira consulta devolve algo
+    universidade = {"elements": [{"id": 1, "tags": {"amenity": "university", "name": "USP"},
+                                  "lat": -23.5, "lon": -46.6}]}
+    respostas = iter([json.dumps(universidade).encode()])
     monkeypatch.setattr(
         sources.urllib.request, "urlopen",
         lambda *a, **k: FakeResponse(next(respostas, b'{"elements": []}')),
     )
     sources.pois()
-    assert settings.pois_csv.read_text(encoding="utf-8") == "-46.6,-23.5,AIR,1,Aeroporto X,\n"
+    assert settings.pois_csv.read_text(encoding="utf-8") == "-46.6,-23.5,UNI,1,USP,\n"
 
 
 def test_overpass_repete_a_consulta_apos_falha(monkeypatch):
