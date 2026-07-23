@@ -24,7 +24,6 @@ MOTIVE_HOME = 8
 # tipo de destino (taxonomia do depot) que cada motivo alcança. Só os que levam a um
 # equipamento nomeável; os difusos (indústria, serviços, refeição…) ficam sem tipo.
 MOTIVE_PLACE_TYPE: dict[int, str] = {
-    2: "SHP",  # Trabalho Comércio
     4: "SCH",  # Educação
     5: "SHP",  # Compras
     6: "HOS",  # Saúde
