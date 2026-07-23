@@ -205,4 +205,5 @@ def test_regressao_zoom_e_continuo(render):
 def test_zone_of_extrai_o_numero_da_zona():
     assert htmlmap._zone_of("z73w12") == 73
     assert htmlmap._zone_of("z301h5") == 301
+    assert htmlmap._zone_of("SCH_z301w5") == 301, "id prefixado pelo tipo ainda traz a zona"
     assert htmlmap._zone_of("SCH_Colegio") == 0

@@ -11,6 +11,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from demand_data.formatting import thousands
+
 log = logging.getLogger(__name__)
 
 _ZOOM = 12
@@ -61,11 +63,6 @@ def _stats(points: list[dict], pops: list[dict]) -> dict[str, int]:
     }
 
 
-def _br(value: int) -> str:
-    """Número no formato brasileiro: 21236872 -> 21.236.872."""
-    return f"{value:,}".replace(",", ".")
-
-
 def build_description(points: list[dict], pops: list[dict], generated_at: datetime) -> str:
     """Ficha do mapa em Markdown: o que ele é, de onde vem e como foi construído."""
     s = _stats(points, pops)
@@ -78,12 +75,12 @@ Metrô-SP, cada uma geolocalizada na origem e no destino reais.
 
 | | |
 |---|---|
-| Viagens/dia | {_br(s["trips"])} |
-| Pontos de demanda | {_br(s["points"])} |
-| Pops | {_br(s["pops"])} |
-| Tamanho do pop (mediana / máximo) | {_br(s["median_pop"])} / {_br(s["max_pop"])} |
-| Demanda por ponto (mediana) | {_br(s["median_point"])} |
-| Destinos nomeados | {_br(s["named"])} |
+| Viagens/dia | {thousands(s["trips"])} |
+| Pontos de demanda | {thousands(s["points"])} |
+| Pops | {thousands(s["pops"])} |
+| Tamanho do pop (mediana / máximo) | {thousands(s["median_pop"])} / {thousands(s["max_pop"])} |
+| Demanda por ponto (mediana) | {thousands(s["median_point"])} |
+| Destinos nomeados | {thousands(s["named"])} |
 
 ## Metodologia
 

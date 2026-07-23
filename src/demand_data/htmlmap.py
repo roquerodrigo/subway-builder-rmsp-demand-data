@@ -17,6 +17,9 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from demand_data import pointid, taxonomy
+from demand_data.formatting import thousands
+
 log = logging.getLogger(__name__)
 
 _COORD_DECIMALS = 5  # ~1 m
@@ -28,8 +31,8 @@ _LAYERS = (
     ("poi", "equipamentos"),
 )
 _KIND_INDEX = {kind: index for index, (kind, _label) in enumerate(_LAYERS)}
-# tipos na ordem em que o JS os traduz; 0 = sem tipo
-_TYPES = ("", "SCH", "HOS", "SHP", "PRK", "UNI", "SPO", "ZOO", "CNV")
+# tipos na ordem em que o JS os traduz (derivados da taxonomia); 0 = sem tipo
+_TYPES = ("", *taxonomy.EQUIPMENT_CODES)
 _TYPE_INDEX = {code: index for index, code in enumerate(_TYPES)}
 
 # no load: o folium só escreve o JS do mapa (e dos grupos) depois deste bloco
@@ -39,8 +42,7 @@ window.addEventListener('load', function () {
     var groups = %(groups)s;
     var map = %(map)s;
     var TYPES = %(types)s;
-    var NAMES = {SCH: 'ensino', HOS: 'saúde', SHP: 'comércio', PRK: 'lazer',
-                 UNI: 'ensino', SPO: 'lazer', ZOO: 'lazer', CNV: 'eventos'};
+    var NAMES = %(names)s;
     var labels = [];  // [lat, lng, texto, prioridade] — quanto menor, mais cedo ganha espaço
     function label(p, isPoi) {
         var code = TYPES[p[6]];
@@ -158,12 +160,7 @@ def _kind(point: dict) -> str:
 
 
 def _zone_of(point_id: str) -> int:
-    digits = ""
-    for char in point_id[1:]:
-        if not char.isdigit():
-            break
-        digits += char
-    return int(digits) if digits else 0
+    return pointid.zone_of(point_id)
 
 
 def _point_rows(points: list[dict]) -> list:
@@ -207,7 +204,7 @@ def write(points: list[dict], center: tuple[float, float], path: Path) -> None:
     counts = collections.Counter(row[4] for row in rows)
     groups = {}
     for index, (kind, label) in enumerate(_LAYERS):
-        group = folium.FeatureGroup(name=f"{label} ({counts.get(index, 0):,})".replace(",", "."))
+        group = folium.FeatureGroup(name=f"{label} ({thousands(counts.get(index, 0))})")
         group.add_to(m)
         groups[kind] = group.get_name()
     folium.LayerControl(collapsed=False).add_to(m)
@@ -217,10 +214,11 @@ def write(points: list[dict], center: tuple[float, float], path: Path) -> None:
                   + ",poi:" + groups["poi"] + "}",
         "map": m.get_name(),
         "types": json.dumps(_TYPES),
+        "names": json.dumps(taxonomy.EQUIPMENT_LABELS, ensure_ascii=False),
     }))
 
     stamp = generated_at.strftime("%d/%m/%Y %H:%M")
-    total = f"{len(points):,}".replace(",", ".")
+    total = thousands(len(points))
     m.get_root().header.add_child(folium.Element(
         f"<title>Pops de demanda RMSP — {stamp}</title>{_STAMP_CSS}"
     ))
