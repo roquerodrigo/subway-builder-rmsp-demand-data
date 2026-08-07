@@ -163,7 +163,12 @@ def pois() -> None:
     # uma consulta por tipo: com a geometria de todos juntos o endpoint público estoura o
     # tempo, e assim a falha de um tipo não derruba os outros
     elements, codes = [], {}
-    for code, filters, with_geometry in POI_QUERIES:
+    for index, (code, filters, with_geometry) in enumerate(POI_QUERIES):
+        if index:
+            # o endpoint público limita o tempo de consulta acumulado por IP: em sequência,
+            # a partir da quinta consulta ele responde 504 mesmo em queries que passam
+            # sozinhas. A pausa devolve o slot antes da próxima.
+            time.sleep(settings.overpass_pause_s)
         found = _overpass(_overpass_query(filters, with_geometry))
         for element in found:
             codes[id(element)] = code

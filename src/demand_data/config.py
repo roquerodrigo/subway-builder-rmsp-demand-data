@@ -73,6 +73,9 @@ class Settings:
     )
     # OpenStreetMap: coordenadas dos equipamentos nomeados
     overpass_url: str = _env("DEMAND_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
+    # pausa (s) entre consultas ao Overpass, para não esgotar o limite por IP do endpoint
+    # público — em sequência ele derruba a partir da quinta consulta
+    overpass_pause_s: float = _env_float("DEMAND_OVERPASS_PAUSE_S", 20.0)
 
     out_dir: Path = Path(_env("DEMAND_OUT_DIR", str(PROJECT_ROOT / "out")))
     # bbox da RMSP: min_lng, min_lat, max_lng, max_lat

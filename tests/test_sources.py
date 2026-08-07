@@ -191,7 +191,8 @@ def test_pois_pula_quando_ja_existe(configure, tmp_path, caplog):
 
 
 def test_pois_baixa_e_escreve_o_csv(configure, tmp_path, monkeypatch):
-    settings = configure(sources, sources_dir=tmp_path, bbox=(-47.0, -24.0, -45.0, -23.0))
+    settings = configure(sources, sources_dir=tmp_path, bbox=(-47.0, -24.0, -45.0, -23.0),
+                         overpass_pause_s=0)
     # o Overpass responde uma vez por tipo; só a primeira consulta devolve algo
     universidade = {"elements": [{"id": 1, "tags": {"amenity": "university", "name": "USP"},
                                   "lat": -23.5, "lon": -46.6}]}
@@ -245,7 +246,7 @@ def test_overpass_usa_a_ultima_tentativa(monkeypatch):
 
 
 def test_acquire_baixa_viagens_e_equipamentos(tmp_path, configure, monkeypatch):
-    settings = configure(sources, sources_dir=tmp_path / "fontes")
+    settings = configure(sources, sources_dir=tmp_path / "fontes", overpass_pause_s=0)
     order: list[str] = []
     for step in ("download_flows", "pois"):
         monkeypatch.setattr(sources, step, lambda step=step: order.append(step))
