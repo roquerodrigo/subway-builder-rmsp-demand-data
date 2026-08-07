@@ -1,7 +1,7 @@
 [project]
 name = "subway-builder-rmsp-demand-data"
 description = "Gera pops de demanda (Subway Builder / depot) a partir das viagens da Pesquisa OD 2023"
-version = "2.0.0"
+version = "3.0.0"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
