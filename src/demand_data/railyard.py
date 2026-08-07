@@ -63,9 +63,25 @@ def _stats(points: list[dict], pops: list[dict]) -> dict[str, int]:
     }
 
 
-def build_description(points: list[dict], pops: list[dict], generated_at: datetime) -> str:
+def scale_label(pop_scale: float) -> str:
+    """A escala como fração legível (``0.05`` -> ``1:20``); vazio quando não há redução."""
+    if pop_scale >= 1:
+        return ""
+    return "1:" + f"{round(1 / pop_scale, 1):g}".replace(".", ",")
+
+
+def build_description(points: list[dict], pops: list[dict], generated_at: datetime,
+                      pop_scale: float = 1.0) -> str:
     """Ficha do mapa em Markdown: o que ele é, de onde vem e como foi construído."""
     s = _stats(points, pops)
+    scale = scale_label(pop_scale)
+    trips_label = f"Viagens/dia (escala {scale})" if scale else "Viagens/dia"
+    scale_note = (
+        f"\n- A demanda é publicada em **escala {scale}**: o tamanho de cada pop é reduzido na "
+        "mesma proporção, para o jogo simular a região inteira com fluidez. Os trajetos, as "
+        "coordenadas e o peso relativo entre eles continuam sendo os observados."
+        if scale else ""
+    )
     return f"""# Região Metropolitana de São Paulo
 
 Demanda gerada a partir das **viagens observadas** da Pesquisa Origem-Destino 2023 do
@@ -75,7 +91,7 @@ Metrô-SP, cada uma geolocalizada na origem e no destino reais.
 
 | | |
 |---|---|
-| Viagens/dia | {thousands(s["trips"])} |
+| {trips_label} | {thousands(s["trips"])} |
 | Pontos de demanda | {thousands(s["points"])} |
 | Pops | {thousands(s["pops"])} |
 | Tamanho do pop (mediana / máximo) | {thousands(s["median_pop"])} / {thousands(s["max_pop"])} |
@@ -88,7 +104,7 @@ Metrô-SP, cada uma geolocalizada na origem e no destino reais.
   termina. Nada é sorteado: o par origem→destino é o par de fato registrado.
 - A viagem é orientada em casa↔atividade pelo motivo do destino: a casa é a origem, salvo na
   volta pra casa, em que é o destino. Ida e volta de um mesmo trajeto se fundem num pop, e o
-  tamanho do pop é o número de **viagens/dia** que a pesquisa expande.
+  tamanho do pop é o número de **viagens/dia** que a pesquisa expande.{scale_note}
 - Cada destino de educação, saúde, comércio ou lazer adota a identidade do equipamento real
   mais próximo do **OpenStreetMap** (escola, hospital, shopping, parque…), sem criar ponto.
 - Os tempos e distâncias de carro são calculados por roteamento na malha viária.
@@ -105,13 +121,14 @@ Gerado em {generated_at.strftime("%d/%m/%Y")} por
 
 
 def write(points: list[dict], pops: list[dict], out_dir: Path, bbox, name: str, code: str,
-          creator: str, version: str, generated_at: datetime | None = None) -> None:
+          creator: str, version: str, generated_at: datetime | None = None,
+          pop_scale: float = 1.0) -> None:
     config = build_config(points, pops, bbox, name, code, creator, version)
     (out_dir / "config.json").write_text(
         json.dumps(config, indent=4, ensure_ascii=False), encoding="utf-8"
     )
     (out_dir / "description.md").write_text(
-        build_description(points, pops, generated_at or datetime.now().astimezone()),
+        build_description(points, pops, generated_at or datetime.now().astimezone(), pop_scale),
         encoding="utf-8",
     )
     log.info("railyard: config.json + description.md")

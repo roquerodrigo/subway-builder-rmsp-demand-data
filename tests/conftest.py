@@ -19,10 +19,16 @@ FLOW_COLUMNS = (
 
 @pytest.fixture
 def configure(monkeypatch):
-    """Troca o ``settings`` visto por um módulo, que é frozen e global."""
+    """Troca o ``settings`` visto por um módulo, que é frozen e global.
+
+    Chamadas sucessivas para o mesmo módulo acumulam: um teste pode ajustar um knob sem
+    perder o que uma fixture já tinha fixado."""
+    applied: dict[object, dict] = {}
 
     def _configure(module, **overrides):
-        patched = replace(settings, **overrides)
+        merged = applied.setdefault(module, {})
+        merged.update(overrides)
+        patched = replace(settings, **merged)
         monkeypatch.setattr(module, "settings", patched)
         return patched
 

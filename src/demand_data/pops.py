@@ -18,7 +18,7 @@ from collections.abc import Iterable
 
 import numpy as np
 
-from demand_data import pointid
+from demand_data import pointid, scaling
 from demand_data.config import settings
 from demand_data.coordinates import CoordinateRegistry
 from demand_data.flows import Flow, orient
@@ -46,7 +46,8 @@ def generate(flows: Iterable[Flow]):
 
     A casa de uma viagem é a origem, salvo na volta pra casa (motivo Residência), em que é o
     destino. O ``size`` do pop é o peso de expansão ``trips`` da viagem; ida e volta do mesmo
-    trajeto caem no mesmo par de pontos e são fundidas (:func:`merge_identical_commutes`).
+    trajeto caem no mesmo par de pontos e são fundidas (:func:`merge_identical_commutes`), e o
+    total é reduzido à escala de jogo (:mod:`demand_data.scaling`) antes do fatiamento.
     """
     cell = settings.density_cell
     points: dict[str, dict] = {}
@@ -84,6 +85,11 @@ def generate(flows: Iterable[Flow]):
 
     _separate_shared_cells(points)
     pops = merge_identical_commutes(pops)
+    # a escala vem antes do fatiamento: é sobre o tamanho já escalado que o limite decide
+    factor = scaling.resolve_factor(
+        sum(pop["size"] for pop in pops), settings.target_population, settings.pop_scale
+    )
+    pops = scaling.scale(pops, factor, settings.min_pop_size)
     pops = split_oversized(pops, settings.max_pop_size)
 
     kept = aggregate(points, pops)
