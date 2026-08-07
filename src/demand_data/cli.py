@@ -15,6 +15,7 @@ from demand_data import (
     pops,
     railyard,
     routing,
+    scaling,
     sources,
 )
 from demand_data.config import settings
@@ -49,7 +50,11 @@ def generate() -> None:
             raise typer.Exit(code=1)
     settings.ensure_out()
 
-    points, poplist = pops.generate(flows.load_flows())
+    observed = flows.load_flows()
+    points, poplist = pops.generate(observed)
+    pop_scale = scaling.resolve_factor(
+        sum(flow.trips for flow in observed), settings.target_population, settings.pop_scale
+    )
     pois.adopt(points, poplist)
     pois.tag_untyped(points, poplist)
     points = pops.aggregate(points, poplist)
@@ -61,7 +66,8 @@ def generate() -> None:
 
     depot.write(points, poplist, settings.demand_json)
     railyard.write(points, poplist, settings.out_dir, settings.bbox, settings.map_name,
-                   settings.map_code, settings.map_creator, settings.map_version)
+                   settings.map_code, settings.map_creator, settings.map_version,
+                   pop_scale=pop_scale)
     b = settings.bbox
     htmlmap.write(points, ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2), settings.map_html)
     typer.echo(f"OK -> {settings.demand_json}  |  {settings.map_html}")

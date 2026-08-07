@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+import pytest
 from tests.conftest import BASE_LAT, BASE_LNG
 
 from demand_data import pops
@@ -14,6 +15,13 @@ POINT_ID = re.compile(r"^z(\d+)(h|w)(\d+)$")
 A = (BASE_LNG, BASE_LAT)
 B = (BASE_LNG + 0.05, BASE_LAT)
 C = (BASE_LNG + 0.02, BASE_LAT + 0.02)
+
+
+@pytest.fixture(autouse=True)
+def escala_real(configure):
+    """As invariantes do modelo são verificadas na escala real da pesquisa; a escala de jogo
+    tem os seus próprios testes (``test_scaling.py``)."""
+    configure(pops, target_population=0, pop_scale=1.0, min_pop_size=1)
 
 
 def flow(origin_zone, dest_zone, motive, name, trips, origin, dest) -> Flow:
@@ -147,6 +155,41 @@ def test_generate_fatia_pop_acima_do_maximo(configure):
     assert max(p["size"] for p in generated) <= 250
     assert sum(p["size"] for p in generated) == 900
     assert len({p["id"] for p in generated}) == len(generated)
+
+
+def test_generate_aplica_a_escala_de_jogo(configure):
+    configure(pops, pop_scale=0.5, min_pop_size=1)
+    points, generated = pops.generate([flow(1, 2, 3, "Trabalho Serviços", 100, A, B)])
+    assert sum(p["size"] for p in generated) == 50
+    assert sum(p["residents"] for p in points) == 50
+
+
+def test_generate_descarta_ponto_que_a_escala_deixou_sem_demanda(configure):
+    """O trajeto que não sobrevive ao piso leva junto os pontos que só ele alimentava."""
+    configure(pops, pop_scale=0.05, min_pop_size=50)
+    points, generated = pops.generate([
+        flow(1, 2, 3, "Trabalho Serviços", 2000, A, B),
+        flow(1, 3, 4, "Educação", 400, A, C),
+    ])
+    assert len(generated) == 1
+    assert C not in [tuple(p["location"]) for p in points]
+
+
+def test_generate_atinge_a_populacao_alvo(configure):
+    configure(pops, target_population=70, max_pop_size=0)
+    _points, generated = pops.generate([
+        flow(1, 2, 3, "Trabalho Serviços", 100, A, B),
+        flow(1, 3, 4, "Educação", 40, A, C),
+    ])
+    assert sum(p["size"] for p in generated) == 70
+
+
+def test_generate_escala_antes_de_fatiar(configure):
+    """A escala vem antes do limite de tamanho: 2000 a 1:20 é um pop só, não quatro."""
+    configure(pops, pop_scale=0.05, min_pop_size=1, max_pop_size=500)
+    _points, generated = pops.generate([flow(1, 2, 3, "Trabalho Serviços", 2000, A, B)])
+    assert len(generated) == 1
+    assert generated[0]["size"] == 100
 
 
 def test_merge_identical_commutes_soma_os_tamanhos():

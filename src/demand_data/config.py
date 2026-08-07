@@ -41,6 +41,16 @@ class Settings:
     # tamanho máximo de pop: um pop é indivisível na simulação, então os grandes são
     # fatiados. 0 = sem limite.
     max_pop_size: int = _env_int("DEMAND_MAX_POP_SIZE", 500)
+    # escala de jogo: população do mapa (Σ size dos pops). A pesquisa expande ~35 M de
+    # viagens/dia, pesadas demais para a simulação; o alvo deriva o fator do total observado,
+    # então trocar de amostra não muda a população. 0 = usa pop_scale.
+    target_population: int = _env_int("DEMAND_TARGET_POPULATION", 5_000_000)
+    # fator explícito, quando se quer a escala e não a população. 1.0 = escala real da
+    # pesquisa. Só vale com target_population em 0. Muda a magnitude, não a proporção.
+    pop_scale: float = _env_float("DEMAND_POP_SCALE", 1.0)
+    # pops que ficam abaixo disso depois da escala são descartados, junto com os pontos que
+    # sobrarem sem demanda. 0/1 mantém todos.
+    min_pop_size: int = _env_int("DEMAND_MIN_POP_SIZE", 1)
 
     # identificação do mapa nos arquivos de submissão ao Railyard
     map_code: str = _env("DEMAND_MAP_CODE", "RMSP")
