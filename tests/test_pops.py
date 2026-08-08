@@ -9,6 +9,7 @@ from tests.conftest import BASE_LAT, BASE_LNG
 
 from demand_data import pops
 from demand_data.flows import Flow
+from demand_data.scaling import Scale
 
 POINT_ID = re.compile(r"^z(\d+)(h|w)(\d+)$")
 
@@ -18,10 +19,10 @@ C = (BASE_LNG + 0.02, BASE_LAT + 0.02)
 
 
 @pytest.fixture(autouse=True)
-def escala_real(configure):
-    """As invariantes do modelo são verificadas na escala real da pesquisa; a escala de jogo
-    tem os seus próprios testes (``test_scaling.py``)."""
-    configure(pops, target_population=0, pop_scale=1.0, min_pop_size=1)
+def sem_piso(configure):
+    """As invariantes do modelo são verificadas sobre a demanda observada inteira; o
+    dimensionamento tem os seus próprios testes (``test_scaling.py``)."""
+    configure(pops, min_pop_size=1)
 
 
 def flow(origin_zone, dest_zone, motive, name, trips, origin, dest) -> Flow:
@@ -149,47 +150,60 @@ def test_generate_separa_casa_e_destino_na_mesma_coordenada():
     assert {role(p["id"]) for p in at_a} == {"h", "w"}
 
 
-def test_generate_fatia_pop_acima_do_maximo(configure):
+def test_generate_publica_a_demanda_observada(configure):
+    """Sem dimensionamento nem fatiamento: quem escala é ``at_scale``."""
     configure(pops, max_pop_size=250)
     _points, generated = pops.generate([flow(1, 2, 3, "Trabalho Serviços", 900, A, B)])
-    assert max(p["size"] for p in generated) <= 250
-    assert sum(p["size"] for p in generated) == 900
-    assert len({p["id"] for p in generated}) == len(generated)
+    assert [p["size"] for p in generated] == [900]
 
 
-def test_generate_aplica_a_escala_de_jogo(configure):
-    configure(pops, pop_scale=0.5, min_pop_size=1)
+def test_at_scale_fatia_pop_acima_do_maximo(configure):
+    configure(pops, max_pop_size=250)
+    points, generated = pops.generate([flow(1, 2, 3, "Trabalho Serviços", 900, A, B)])
+    _scaled_points, scaled = pops.at_scale(points, generated, Scale(100))
+    assert max(p["size"] for p in scaled) <= 250
+    assert sum(p["size"] for p in scaled) == 900
+    assert len({p["id"] for p in scaled}) == len(scaled)
+
+
+def test_at_scale_reduz_a_demanda_e_os_pontos(configure):
+    configure(pops, min_pop_size=1)
     points, generated = pops.generate([flow(1, 2, 3, "Trabalho Serviços", 100, A, B)])
-    assert sum(p["size"] for p in generated) == 50
-    assert sum(p["residents"] for p in points) == 50
+    scaled_points, scaled = pops.at_scale(points, generated, Scale(50))
+    assert sum(p["size"] for p in scaled) == 50
+    assert sum(p["residents"] for p in scaled_points) == 50
 
 
-def test_generate_descarta_ponto_que_a_escala_deixou_sem_demanda(configure):
+def test_at_scale_descarta_ponto_que_a_reducao_deixou_sem_demanda(configure):
     """O trajeto que não sobrevive ao piso leva junto os pontos que só ele alimentava."""
-    configure(pops, pop_scale=0.05, min_pop_size=50)
+    configure(pops, min_pop_size=50)
     points, generated = pops.generate([
         flow(1, 2, 3, "Trabalho Serviços", 2000, A, B),
         flow(1, 3, 4, "Educação", 400, A, C),
     ])
-    assert len(generated) == 1
-    assert C not in [tuple(p["location"]) for p in points]
+    scaled_points, scaled = pops.at_scale(points, generated, Scale(5))
+    assert len(scaled) == 1
+    assert C not in [tuple(p["location"]) for p in scaled_points]
 
 
-def test_generate_atinge_a_populacao_alvo(configure):
-    configure(pops, target_population=70, max_pop_size=0)
-    _points, generated = pops.generate([
-        flow(1, 2, 3, "Trabalho Serviços", 100, A, B),
-        flow(1, 3, 4, "Educação", 40, A, C),
-    ])
-    assert sum(p["size"] for p in generated) == 70
+def test_at_scale_reduz_antes_de_fatiar(configure):
+    """O dimensionamento vem antes do limite de tamanho: 2000 a 5% é um pop só, não quatro."""
+    configure(pops, min_pop_size=1, max_pop_size=500)
+    points, generated = pops.generate([flow(1, 2, 3, "Trabalho Serviços", 2000, A, B)])
+    _scaled_points, scaled = pops.at_scale(points, generated, Scale(5))
+    assert len(scaled) == 1
+    assert scaled[0]["size"] == 100
 
 
-def test_generate_escala_antes_de_fatiar(configure):
-    """A escala vem antes do limite de tamanho: 2000 a 1:20 é um pop só, não quatro."""
-    configure(pops, pop_scale=0.05, min_pop_size=1, max_pop_size=500)
-    _points, generated = pops.generate([flow(1, 2, 3, "Trabalho Serviços", 2000, A, B)])
-    assert len(generated) == 1
-    assert generated[0]["size"] == 100
+def test_at_scale_nao_gasta_a_demanda_observada(configure):
+    """Todos os dimensionamentos partem da mesma demanda: um não pode estragar o próximo."""
+    configure(pops, min_pop_size=1, max_pop_size=0)
+    points, generated = pops.generate([flow(1, 2, 3, "Trabalho Serviços", 1000, A, B)])
+    pops.at_scale(points, generated, Scale(5))
+    _scaled_points, scaled = pops.at_scale(points, generated, Scale(50))
+    assert sum(p["size"] for p in scaled) == 500
+    assert sum(p["size"] for p in generated) == 1000
+    assert sum(p["residents"] for p in points) == 1000
 
 
 def test_merge_identical_commutes_soma_os_tamanhos():

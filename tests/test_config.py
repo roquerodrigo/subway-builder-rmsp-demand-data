@@ -70,26 +70,45 @@ def test_env_int_rejects_float_text(monkeypatch):
         config._env_int("DEMAND_TEST_INT", 42)
 
 
+def test_env_percents_returns_default_when_variable_is_empty(monkeypatch):
+    monkeypatch.setenv("DEMAND_TEST_PERCENTS", "")
+    assert config._env_percents("DEMAND_TEST_PERCENTS", (5, 100)) == (5, 100)
+
+
+def test_env_percents_parses_a_comma_separated_list(monkeypatch):
+    monkeypatch.setenv("DEMAND_TEST_PERCENTS", "25,5, 10")
+    assert config._env_percents("DEMAND_TEST_PERCENTS", (100,)) == (5, 10, 25)
+
+
+def test_env_percents_drops_repeated_values(monkeypatch):
+    monkeypatch.setenv("DEMAND_TEST_PERCENTS", "10,10,5")
+    assert config._env_percents("DEMAND_TEST_PERCENTS", (100,)) == (5, 10)
+
+
 def test_module_settings_read_the_environment(reload_config, tmp_path):
     reloaded = reload_config(
         DEMAND_SOURCES_DIR=str(tmp_path / "fontes"),
         DEMAND_OUT_DIR=str(tmp_path / "saida"),
         DEMAND_MAX_POP_SIZE="250",
+        DEMAND_SCALE_PERCENTS="10,100",
         DEMAND_FLOW_URL="https://exemplo/fluxos.parquet",
     )
     assert reloaded.settings.sources_dir == tmp_path / "fontes"
     assert reloaded.settings.out_dir == tmp_path / "saida"
     assert reloaded.settings.max_pop_size == 250
+    assert reloaded.settings.scale_percents == (10, 100)
     assert reloaded.settings.flow_url == "https://exemplo/fluxos.parquet"
 
 
 def test_module_settings_fall_back_to_defaults(reload_config, monkeypatch):
-    for name in ("DEMAND_MAX_POP_SIZE", "DEMAND_DENSITY_CELL", "DEMAND_POI_SNAP_M"):
+    for name in ("DEMAND_MAX_POP_SIZE", "DEMAND_DENSITY_CELL", "DEMAND_POI_SNAP_M",
+                 "DEMAND_SCALE_PERCENTS"):
         monkeypatch.delenv(name, raising=False)
     reloaded = reload_config()
     assert reloaded.settings.max_pop_size == 500
     assert reloaded.settings.density_cell == 0.00045
     assert reloaded.settings.poi_snap_m == 500.0
+    assert reloaded.settings.scale_percents == (5, 10, 25, 50, 100)
 
 
 def test_project_root_holds_the_package():
@@ -107,9 +126,8 @@ def test_source_paths_hang_from_sources_dir(settings, tmp_path):
     assert settings.pois_csv == sources_dir / "pois.csv"
 
 
-def test_output_paths_hang_from_out_dir(settings, tmp_path):
-    assert settings.demand_json == tmp_path / "out" / "demand_data.json"
-    assert settings.map_html == tmp_path / "out" / "pops_map.html"
+def test_variant_dir_hangs_from_out_dir(settings, tmp_path):
+    assert settings.variant_dir("005") == tmp_path / "out" / "scale-005"
 
 
 def test_in_bbox_accepts_an_interior_point(settings):
