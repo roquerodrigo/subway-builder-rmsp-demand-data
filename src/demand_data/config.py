@@ -65,7 +65,7 @@ class Settings:
     map_code: str = _env("DEMAND_MAP_CODE", "RMSP")
     map_name: str = _env("DEMAND_MAP_NAME", "Região Metropolitana de São Paulo")
     map_creator: str = _env("DEMAND_MAP_CREATOR", "")
-    map_version: str = _env("DEMAND_MAP_VERSION", "3.0.0")
+    map_version: str = _env("DEMAND_MAP_VERSION", "4.0.0")
     # servidor OSRM local para tempo/distância de carro (vazio = deixa o depot rotear)
     osrm_url: str = _env("DEMAND_OSRM_URL", "")
 
