@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from demand_data import cli
+from demand_data.scaling import Scale
 
 
 @pytest.fixture
@@ -44,6 +45,7 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(cli, "pops", SimpleNamespace(
         generate=record("pops.generate", (points, poplist)),
         aggregate=record("pops.aggregate", points),
+        at_scale=record("pops.at_scale", (points, poplist)),
     ))
     monkeypatch.setattr(cli, "depot", SimpleNamespace(write=record("depot.write")))
     monkeypatch.setattr(cli, "htmlmap", SimpleNamespace(write=record("htmlmap.write")))
@@ -52,7 +54,8 @@ def pipeline(monkeypatch):
 
 @pytest.fixture
 def settings(tmp_path, configure):
-    return configure(cli, sources_dir=tmp_path / "sources", out_dir=tmp_path / "out")
+    return configure(cli, sources_dir=tmp_path / "sources", out_dir=tmp_path / "out",
+                     scale_percents=(5, 100))
 
 
 def create_inputs(settings) -> None:
@@ -114,19 +117,46 @@ def test_generate_grava_depot_e_mapa(runner, pipeline, settings):
     create_inputs(settings)
     result = runner.invoke(cli.app, ["generate"])
     assert result.exit_code == 0
+    package = settings.variant_dir("005")
     assert pipeline.calls["depot.write"][0][0] == (
-        pipeline.points, pipeline.poplist, settings.demand_json
+        pipeline.points, pipeline.poplist, package / "demand_data.json"
     )
     args, kwargs = pipeline.calls["htmlmap.write"][0]
     min_lng, min_lat, max_lng, max_lat = settings.bbox
     assert args == (
         pipeline.points,
         ((min_lng + max_lng) / 2, (min_lat + max_lat) / 2),
-        settings.map_html,
+        package / "pops_map.html",
     )
     assert kwargs == {}
-    assert str(settings.demand_json) in result.output
-    assert str(settings.map_html) in result.output
+    assert str(package) in result.output
+
+
+def test_generate_grava_um_pacote_por_dimensionamento(runner, pipeline, settings):
+    create_inputs(settings)
+    result = runner.invoke(cli.app, ["generate"])
+    assert result.exit_code == 0
+    assert [args[2] for args, _ in pipeline.calls["depot.write"]] == [
+        settings.variant_dir("005") / "demand_data.json",
+        settings.variant_dir("100") / "demand_data.json",
+    ]
+    assert [kwargs["scale"] for _, kwargs in pipeline.calls["railyard.write"]] == [
+        Scale(5), Scale(100)
+    ]
+    assert all(directory.is_dir() for directory in
+               (settings.variant_dir("005"), settings.variant_dir("100")))
+
+
+def test_generate_deriva_todo_pacote_da_mesma_demanda_observada(runner, pipeline, settings):
+    """A demanda é construída e roteada uma vez; cada dimensionamento parte dela."""
+    create_inputs(settings)
+    result = runner.invoke(cli.app, ["generate"])
+    assert result.exit_code == 0
+    assert len(pipeline.calls["pops.generate"]) == 1
+    assert [args for args, _ in pipeline.calls["pops.at_scale"]] == [
+        (pipeline.points, pipeline.poplist, Scale(5)),
+        (pipeline.points, pipeline.poplist, Scale(100)),
+    ]
 
 
 def test_flows_only_resume_as_viagens(runner, pipeline, settings):

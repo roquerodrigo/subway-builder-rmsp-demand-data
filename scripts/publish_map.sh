@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Publishes out/pops_map.html to GitHub Pages as a single-commit gh-pages branch.
+# Publishes a generated demand map to GitHub Pages as a single-commit gh-pages branch.
+# Defaults to the full-scale package; pass another map to publish it instead.
 set -euo pipefail
 
 BRANCH="gh-pages"
-MAP="out/pops_map.html"
+MAP="${1:-out/scale-100/pops_map.html}"
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"

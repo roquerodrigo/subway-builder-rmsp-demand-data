@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 
 from demand_data import railyard
+from demand_data.scaling import Scale
 
 BBOX = (-47.22, -24.08, -45.68, -23.17)
 
@@ -49,7 +50,7 @@ def test_config_omite_pais_vazio():
 def test_description_resume_a_demanda():
     points, pops = sample()
     text = railyard.build_description(points, pops, datetime(2026, 7, 19))
-    assert "| Viagens/dia | 1.000 |" in text
+    assert "| Viagens/dia (100% da demanda observada) | 1.000 |" in text
     assert "| Destinos nomeados | 0 |" in text
     assert "19/07/2026" in text
 
@@ -71,7 +72,26 @@ def test_description_nao_estraga_a_pontuacao_do_texto():
 
 def test_description_aguenta_demanda_vazia():
     text = railyard.build_description([], [], datetime(2026, 7, 19))
-    assert "| Viagens/dia | 0 |" in text
+    assert "| Viagens/dia (100% da demanda observada) | 0 |" in text
+
+
+def test_description_anuncia_o_dimensionamento():
+    points, pops = sample()
+    text = railyard.build_description(points, pops, datetime(2026, 7, 19), Scale(5))
+    assert "| Viagens/dia (5% da demanda observada) | 1.000 |" in text
+    assert "**5% da demanda observada** (escala 1:20)" in text
+
+
+def test_description_anuncia_a_escala_real_em_cem_por_cento():
+    points, pops = sample()
+    text = railyard.build_description(points, pops, datetime(2026, 7, 19), Scale(100))
+    assert "**escala real da pesquisa**" in text
+    assert "escala 1:1" not in text
+
+
+def test_codigo_e_nome_carregam_o_dimensionamento():
+    assert railyard.variant_code("RMSP", Scale(25)) == "RMSP25"
+    assert railyard.variant_name("RMSP", Scale(25)) == "RMSP (25%)"
 
 
 def test_write_grava_os_dois_arquivos(tmp_path):
@@ -79,5 +99,17 @@ def test_write_grava_os_dois_arquivos(tmp_path):
     railyard.write(points, pops, tmp_path, BBOX, "RMSP", "RMSP", "alguem", "1.1.0",
                    generated_at=datetime(2026, 7, 19))
     config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-    assert config["code"] == "RMSP"
+    assert config["code"] == "RMSP100"
     assert "Região Metropolitana" in (tmp_path / "description.md").read_text(encoding="utf-8")
+
+
+def test_write_identifica_o_mapa_pelo_dimensionamento(tmp_path):
+    points, pops = sample()
+    railyard.write(points, pops, tmp_path, BBOX, "Região Metropolitana", "RMSP", "alguem",
+                   "1.1.0", generated_at=datetime(2026, 7, 19), scale=Scale(5))
+    config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert config["code"] == "RMSP5"
+    assert config["name"] == "Região Metropolitana (5%)"
+    assert (tmp_path / "description.md").read_text(encoding="utf-8").startswith(
+        "# Região Metropolitana de São Paulo (5%)"
+    )

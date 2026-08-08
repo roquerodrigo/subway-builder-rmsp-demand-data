@@ -45,9 +45,11 @@ def generate(flows: Iterable[Flow]):
     """Constrói ``(points, pops)`` a partir das viagens orientadas em casa↔atividade.
 
     A casa de uma viagem é a origem, salvo na volta pra casa (motivo Residência), em que é o
-    destino. O ``size`` do pop é o peso de expansão ``trips`` da viagem; ida e volta do mesmo
-    trajeto caem no mesmo par de pontos e são fundidas (:func:`merge_identical_commutes`), e o
-    total é reduzido à escala de jogo (:mod:`demand_data.scaling`) antes do fatiamento.
+    destino. O ``size`` do pop é o peso de expansão ``trips`` da viagem, e ida e volta do mesmo
+    trajeto caem no mesmo par de pontos e são fundidas (:func:`merge_identical_commutes`).
+
+    A saída é a demanda **observada**, na escala real da pesquisa: é dela que cada
+    dimensionamento publicado deriva (:func:`at_scale`).
     """
     cell = settings.density_cell
     points: dict[str, dict] = {}
@@ -85,21 +87,33 @@ def generate(flows: Iterable[Flow]):
 
     _separate_shared_cells(points)
     pops = merge_identical_commutes(pops)
-    # a escala vem antes do fatiamento: é sobre o tamanho já escalado que o limite decide
-    factor = scaling.resolve_factor(
-        sum(pop["size"] for pop in pops), settings.target_population, settings.pop_scale
-    )
-    pops = scaling.scale(pops, factor, settings.min_pop_size)
-    pops = split_oversized(pops, settings.max_pop_size)
 
     kept = aggregate(points, pops)
     res_pts = sum(1 for p in kept if p["residents"] > 0)
     job_pts = sum(1 for p in kept if p["jobs"] > 0)
     log.info(
-        "gerados: %d points (%d casa, %d trabalho), %d pops | Σsize=%d",
+        "observados: %d points (%d casa, %d trabalho), %d pops | Σsize=%d",
         len(kept), res_pts, job_pts, len(pops), sum(p["size"] for p in pops),
     )
     return kept, pops
+
+
+def at_scale(points: list[dict], pops: list[dict], scale: scaling.Scale):
+    """A demanda observada publicada no dimensionamento ``scale``.
+
+    O dimensionamento vem antes do fatiamento: é sobre o tamanho já reduzido que o limite de
+    pop decide. Não toca nos originais — todos os dimensionamentos partem da mesma demanda
+    observada, e cada um descarta a sua própria cauda.
+    """
+    scaled = split_oversized(
+        scaling.apply(pops, scale, settings.min_pop_size), settings.max_pop_size
+    )
+    kept = aggregate([dict(point) for point in points], scaled)
+    log.info(
+        "%d%%: %d points, %d pops | Σsize=%d",
+        scale.percent, len(kept), len(scaled), sum(p["size"] for p in scaled),
+    )
+    return kept, scaled
 
 
 def _separate_shared_cells(points: dict[str, dict]) -> None:

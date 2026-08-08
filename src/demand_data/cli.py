@@ -37,9 +37,11 @@ def cmd_sources() -> None:
 
 @app.command()
 def generate() -> None:
-    """Pipeline completo: viagens -> pops -> demand_data.json + mapa HTML.
+    """Pipeline completo: viagens -> pops -> um pacote por dimensionamento em out/.
 
-    Roda ``sources`` automaticamente se os dados ainda não estiverem em data/sources."""
+    A demanda observada é construída e roteada uma vez; cada percentual de
+    ``DEMAND_SCALE_PERCENTS`` deriva dela o seu próprio pacote. Roda ``sources``
+    automaticamente se os dados ainda não estiverem em data/sources."""
     if not settings.have_inputs():
         typer.echo("dados ausentes em data/sources — rodando `sources` primeiro...")
         sources.acquire()
@@ -50,11 +52,7 @@ def generate() -> None:
             raise typer.Exit(code=1)
     settings.ensure_out()
 
-    observed = flows.load_flows()
-    points, poplist = pops.generate(observed)
-    pop_scale = scaling.resolve_factor(
-        sum(flow.trips for flow in observed), settings.target_population, settings.pop_scale
-    )
+    points, poplist = pops.generate(flows.load_flows())
     pois.adopt(points, poplist)
     pois.tag_untyped(points, poplist)
     points = pops.aggregate(points, poplist)
@@ -64,13 +62,24 @@ def generate() -> None:
     else:
         typer.echo("sem DEMAND_OSRM_URL — o depot calcula as rotas na importação")
 
-    depot.write(points, poplist, settings.demand_json)
-    railyard.write(points, poplist, settings.out_dir, settings.bbox, settings.map_name,
-                   settings.map_code, settings.map_creator, settings.map_version,
-                   pop_scale=pop_scale)
+    for percent in settings.scale_percents:
+        _write_package(points, poplist, scaling.Scale(percent))
+    typer.echo(f"OK -> {len(settings.scale_percents)} dimensionamentos em {settings.out_dir}")
+
+
+def _write_package(points: list[dict], poplist: list[dict], scale: scaling.Scale) -> None:
+    """Grava o pacote de um dimensionamento: demanda, arquivos do Railyard e mapa."""
+    scaled_points, scaled_pops = pops.at_scale(points, poplist, scale)
+    out_dir = settings.variant_dir(scale.slug)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    depot.write(scaled_points, scaled_pops, out_dir / "demand_data.json")
+    railyard.write(scaled_points, scaled_pops, out_dir, settings.bbox, settings.map_name,
+                   settings.map_code, settings.map_creator, settings.map_version, scale=scale)
     b = settings.bbox
-    htmlmap.write(points, ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2), settings.map_html)
-    typer.echo(f"OK -> {settings.demand_json}  |  {settings.map_html}")
+    htmlmap.write(scaled_points, ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2),
+                  out_dir / "pops_map.html")
+    typer.echo(f"  {scale.percent:>3}% -> {out_dir}")
 
 
 @app.command()

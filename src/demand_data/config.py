@@ -31,6 +31,13 @@ def _env_int(name: str, default: int) -> int:
     return int(v) if v not in (None, "") else default
 
 
+def _env_percents(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    v = os.environ.get(name)
+    if v in (None, ""):
+        return default
+    return tuple(sorted({int(part) for part in v.split(",") if part.strip()}))
+
+
 @dataclass(frozen=True)
 class Settings:
     sources_dir: Path = Path(_env("DEMAND_SOURCES_DIR", str(PROJECT_ROOT / "data" / "sources")))
@@ -41,15 +48,14 @@ class Settings:
     # tamanho máximo de pop: um pop é indivisível na simulação, então os grandes são
     # fatiados. 0 = sem limite.
     max_pop_size: int = _env_int("DEMAND_MAX_POP_SIZE", 500)
-    # escala de jogo: população do mapa (Σ size dos pops). A pesquisa expande ~35 M de
-    # viagens/dia, pesadas demais para a simulação; o alvo deriva o fator do total observado,
-    # então trocar de amostra não muda a população. 0 = usa pop_scale.
-    target_population: int = _env_int("DEMAND_TARGET_POPULATION", 5_000_000)
-    # fator explícito, quando se quer a escala e não a população. 1.0 = escala real da
-    # pesquisa. Só vale com target_population em 0. Muda a magnitude, não a proporção.
-    pop_scale: float = _env_float("DEMAND_POP_SCALE", 1.0)
-    # pops que ficam abaixo disso depois da escala são descartados, junto com os pontos que
-    # sobrarem sem demanda. 0/1 mantém todos.
+    # dimensionamentos publicados: cada um é uma fração (%) da demanda observada, e sai como um
+    # pacote próprio em out/. A pesquisa expande ~35 M de viagens/dia, pesadas demais para a
+    # simulação em qualquer máquina, então 100% (escala real) é o teto e não o padrão único.
+    scale_percents: tuple[int, ...] = field(
+        default_factory=lambda: _env_percents("DEMAND_SCALE_PERCENTS", (5, 10, 25, 50, 100))
+    )
+    # pops que ficam abaixo disso depois do dimensionamento são descartados, junto com os
+    # pontos que sobrarem sem demanda. 0/1 mantém todos.
     min_pop_size: int = _env_int("DEMAND_MIN_POP_SIZE", 1)
 
     # identificação do mapa nos arquivos de submissão ao Railyard
@@ -91,13 +97,9 @@ class Settings:
     def pois_csv(self) -> Path:
         return self.sources_dir / "pois.csv"
 
-    @property
-    def demand_json(self) -> Path:
-        return self.out_dir / "demand_data.json"
-
-    @property
-    def map_html(self) -> Path:
-        return self.out_dir / "pops_map.html"
+    def variant_dir(self, slug: str) -> Path:
+        """Pacote de um dimensionamento (``005`` -> ``out/scale-005``)."""
+        return self.out_dir / f"scale-{slug}"
 
     def in_bbox(self, lng: float, lat: float) -> bool:
         b = self.bbox

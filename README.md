@@ -9,7 +9,7 @@ Projeto enxuto: consome as viagens já geolocalizadas do repositório de dados [
 1. **Uma viagem observada por linha** — o repositório de dados publica `fluxos.parquet`: cada linha é uma viagem da pesquisa, com a coordenada real de onde começa e termina, o motivo **no destino** (`MOTIVO_D`) e o peso de expansão `trips` (`FE_VIA`, viagens/dia). Nada é sorteado: o par origem→destino é o par de fato registrado.
 2. **Orientação casa↔atividade pelo motivo** — cada viagem é orientada em uma ponta-casa e uma ponta-atividade. Na volta pra casa (motivo **Residência**) a casa é o **destino**; em qualquer outra viagem a casa é a **origem** e o destino é a atividade. Assim a ida (casa→trabalho) e a volta (trabalho→casa) do mesmo trajeto caem no mesmo par de pontos e são **fundidas** num pop, somando os `trips`.
 3. **`size` do pop = viagens/dia** — o tamanho de cada pop é o número de viagens que a pesquisa expande para aquele par. `Σ tamanho dos pops == total de viagens/dia da pesquisa` (invariante), antes da escala de jogo.
-4. **Escala de jogo** — a pesquisa expande ~35 M de viagens/dia; como um pop é indivisível, todo pop acima de `DEMAND_MAX_POP_SIZE` é fatiado, e a contagem final acompanha o total de viagens, não o número de trajetos. `DEMAND_TARGET_POPULATION` (default `5000000`) declara a população do mapa e o fator é derivado do total observado — reduzindo **todos** os pops na mesma proporção, então os trajetos, as coordenadas e o peso relativo entre eles continuam sendo os observados; só a magnitude muda. Com o `fluxos_10k` isso leva de ~79 mil pops a ~19 mil, sem perder nenhum trajeto. Derivar do alvo mantém a população estável ao trocar de amostra de viagens; quem prefere declarar a escala usa `DEMAND_TARGET_POPULATION=0` + `DEMAND_POP_SCALE`.
+4. **Dimensionamentos** — a pesquisa expande ~35 M de viagens/dia; como um pop é indivisível, todo pop acima de `DEMAND_MAX_POP_SIZE` é fatiado, e a contagem final acompanha o total de viagens, não o número de trajetos. Não há um tamanho certo para todas as máquinas, então a demanda sai em vários **percentuais da demanda observada** (`DEMAND_SCALE_PERCENTS`, default `5,10,25,50,100`): cada um reduz **todos** os pops na mesma proporção, então os trajetos, as coordenadas e o peso relativo entre eles continuam sendo os observados; só a magnitude muda. 100% é a escala real da pesquisa. Declarar a fração, e não uma população alvo, mantém o significado do número quando a amostra de viagens muda.
 5. **Pontos de papel único** — as coordenadas são quantizadas a uma grade fina (~50 m) para deduplicar endereços quase coincidentes; casa e atividade recebem ids por papel (`z{zona}h{i}` moradia, `z{zona}w{i}` destino), então nenhum ponto é ao mesmo tempo residência e destino. A zona do id vem da própria viagem.
 6. **Destino tipado pelo motivo** — educação → escola (`SCH`), saúde → hospital (`HOS`), compras/trabalho no comércio → shopping (`SHP`), lazer → parque (`PRK`). Os demais motivos (indústria, serviços, refeição, assuntos pessoais) são difusos e ficam sem tipo.
 7. **Equipamentos nomeados dão identidade, não demanda** — cada destino tipado adota a identidade do equipamento real **mais próximo** que atende o seu motivo (escolas, campi, hospitais, shoppings, parques, estádios do **OpenStreetMap**, cada um com o seu `osm_id`), herdando nome, tipo e coordenada, sem criar nenhum ponto. Entre dois igualmente próximos, o de maior porte (área do contorno do OSM) desempata. A demanda continua sendo a que a pesquisa manda para o destino.
@@ -28,9 +28,9 @@ O comando `sources` baixa os dois para `data/sources/` (idempotente).
 ```bash
 uv sync
 uv run demand-data sources     # baixa viagens + equipamentos -> data/sources/
-uv run demand-data generate    # viagens -> pops -> out/demand_data.json + out/pops_map.html
+uv run demand-data generate    # viagens -> pops -> um pacote por dimensionamento em out/
 uv run demand-data flows-only  # só a leitura das viagens (diagnóstico)
-./scripts/publish_map.sh       # publica out/pops_map.html no GitHub Pages (branch gh-pages)
+./scripts/publish_map.sh       # publica o mapa de 100% no GitHub Pages (branch gh-pages)
 ```
 
 ## Testes
@@ -44,16 +44,18 @@ Os testes rodam sobre recortes minúsculos das fontes, no mesmo formato, sem red
 
 `generate` roda `sources` automaticamente se os dados ainda não estiverem em `data/sources`.
 
-Saídas em `out/`:
+Cada dimensionamento sai como um pacote completo em `out/scale-<percentual>/` (`scale-005`, `scale-010`, `scale-025`, `scale-050`, `scale-100`):
 - **`demand_data.json`** (+ `.gz`) — importável no depot (`DemandData`).
-- **`config.json`** e **`description.md`** — exigidos na submissão ao Railyard (recorte, total de viagens, câmera inicial e a ficha do mapa).
+- **`config.json`** e **`description.md`** — exigidos na submissão ao Railyard (recorte, total de viagens, câmera inicial e a ficha do mapa). O código e o nome carregam a fração (`RMSP25`, "… (25%)"), já que cada dimensionamento é um mapa próprio.
 - **`pops_map.html`** — mapa dos pontos (raio ∝ demanda, cor = balanço moradia×destino). Versão publicada: **https://www.rodrigoroque.dev/subway-builder-rmsp-demand-data/**
+
+A demanda observada é construída e roteada **uma vez**; os pacotes derivam dela, então gerar cinco custa quase o mesmo que gerar um.
 
 Com `DEMAND_OSRM_URL` apontando para um servidor OSRM local, os pops já saem com `drivingSeconds`/`drivingDistance` preenchidos; sem ele os campos ficam em 0 e o depot roteia na importação. O `docstring` de `src/demand_data/routing.py` traz os comandos para subir o servidor.
 
 ## Configuração (`.env`)
 
-Veja `.env.example`. Principais: `DEMAND_TARGET_POPULATION` (população do mapa — o knob de desempenho), `DEMAND_MIN_POP_SIZE` (descarta a cauda depois da escala), `DEMAND_DENSITY_CELL` (grade de quantização dos pontos), `DEMAND_MAX_POP_SIZE` (fatia os pops maiores), `DEMAND_POI_SNAP_M` (raio de adoção do equipamento nomeado), `DEMAND_FLOW_URL` (URL do parquet de viagens), `DEMAND_SOURCES_DIR` (onde estão os dados).
+Veja `.env.example`. Principais: `DEMAND_SCALE_PERCENTS` (quais dimensionamentos publicar), `DEMAND_MIN_POP_SIZE` (descarta a cauda depois da redução), `DEMAND_DENSITY_CELL` (grade de quantização dos pontos), `DEMAND_MAX_POP_SIZE` (fatia os pops maiores), `DEMAND_POI_SNAP_M` (raio de adoção do equipamento nomeado), `DEMAND_FLOW_URL` (URL do parquet de viagens), `DEMAND_SOURCES_DIR` (onde estão os dados).
 
 ## Estrutura
 
@@ -62,7 +64,7 @@ src/demand_data/
   sources.py   # aquisição: viagens (parquet) + equipamentos OSM (Overpass) em data/sources
   flows.py     # leitura das viagens e orientação casa↔atividade pelo motivo
   pops.py      # viagens -> pops (quantização, fusão ida+volta, fatiamento)
-  scaling.py   # escala de jogo: reduz o tamanho dos pops preservando a proporção
+  scaling.py   # dimensionamento: reduz o tamanho dos pops preservando a proporção
   pois.py      # adoção do equipamento nomeado mais próximo por destino
   depot.py     # escreve demand_data.json (+ .gz)
   htmlmap.py   # mapa HTML (folium)

@@ -2,6 +2,9 @@
 
 ``config.json`` é exigido pelo importador do jogo (mesmos campos que o ``create_config`` do
 depot escreve) e ``description.md`` é o texto que aparece na ficha do mapa.
+
+Cada dimensionamento é um mapa próprio no Railyard, então o código e o nome carregam a fração
+publicada (``RMSP25``, "… (25%)") — sem isso os cinco pacotes colidiriam na submissão.
 """
 
 from __future__ import annotations
@@ -12,10 +15,12 @@ from datetime import datetime
 from pathlib import Path
 
 from demand_data.formatting import thousands
+from demand_data.scaling import Scale
 
 log = logging.getLogger(__name__)
 
 _ZOOM = 12
+FULL_SCALE = Scale(100)
 _OD_URL = "https://transparencia.metrosp.com.br/dataset/pesquisa-origem-e-destino"
 _DATA_URL = "https://www.rodrigoroque.dev/transporte-sp-origem-destino/dados/"
 _OSM_URL = "https://www.openstreetmap.org/"
@@ -63,26 +68,30 @@ def _stats(points: list[dict], pops: list[dict]) -> dict[str, int]:
     }
 
 
-def scale_label(pop_scale: float) -> str:
-    """A escala como fração legível (``0.05`` -> ``1:20``); vazio quando não há redução."""
-    if pop_scale >= 1:
-        return ""
-    return "1:" + f"{round(1 / pop_scale, 1):g}".replace(".", ",")
+def variant_code(code: str, scale: Scale) -> str:
+    """Código do mapa no dimensionamento (``RMSP`` a 25% -> ``RMSP25``)."""
+    return f"{code}{scale.percent}"
+
+
+def variant_name(name: str, scale: Scale) -> str:
+    return f"{name} ({scale.percent}%)"
 
 
 def build_description(points: list[dict], pops: list[dict], generated_at: datetime,
-                      pop_scale: float = 1.0) -> str:
+                      scale: Scale = FULL_SCALE) -> str:
     """Ficha do mapa em Markdown: o que ele é, de onde vem e como foi construído."""
     s = _stats(points, pops)
-    scale = scale_label(pop_scale)
-    trips_label = f"Viagens/dia (escala {scale})" if scale else "Viagens/dia"
+    trips_label = f"Viagens/dia ({scale.percent}% da demanda observada)"
     scale_note = (
-        f"\n- A demanda é publicada em **escala {scale}**: o tamanho de cada pop é reduzido na "
-        "mesma proporção, para o jogo simular a região inteira com fluidez. Os trajetos, as "
-        "coordenadas e o peso relativo entre eles continuam sendo os observados."
-        if scale else ""
+        "\n- A demanda é publicada na **escala real da pesquisa**: o tamanho do pop é o número "
+        "de viagens/dia que a pesquisa expande para aquele trajeto."
+        if scale.is_full else
+        f"\n- A demanda é publicada a **{scale.percent}% da demanda observada** (escala "
+        f"{scale.ratio}): o tamanho de cada pop é reduzido na mesma proporção, para o jogo "
+        "simular a região inteira com fluidez. Os trajetos, as coordenadas e o peso relativo "
+        "entre eles continuam sendo os observados."
     )
-    return f"""# Região Metropolitana de São Paulo
+    return f"""# Região Metropolitana de São Paulo ({scale.percent}%)
 
 Demanda gerada a partir das **viagens observadas** da Pesquisa Origem-Destino 2023 do
 Metrô-SP, cada uma geolocalizada na origem e no destino reais.
@@ -122,13 +131,14 @@ Gerado em {generated_at.strftime("%d/%m/%Y")} por
 
 def write(points: list[dict], pops: list[dict], out_dir: Path, bbox, name: str, code: str,
           creator: str, version: str, generated_at: datetime | None = None,
-          pop_scale: float = 1.0) -> None:
-    config = build_config(points, pops, bbox, name, code, creator, version)
+          scale: Scale = FULL_SCALE) -> None:
+    config = build_config(points, pops, bbox, variant_name(name, scale),
+                          variant_code(code, scale), creator, version)
     (out_dir / "config.json").write_text(
         json.dumps(config, indent=4, ensure_ascii=False), encoding="utf-8"
     )
     (out_dir / "description.md").write_text(
-        build_description(points, pops, generated_at or datetime.now().astimezone(), pop_scale),
+        build_description(points, pops, generated_at or datetime.now().astimezone(), scale),
         encoding="utf-8",
     )
     log.info("railyard: config.json + description.md")
