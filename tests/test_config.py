@@ -105,8 +105,8 @@ def test_module_settings_fall_back_to_defaults(reload_config, monkeypatch):
                  "DEMAND_SCALE_PERCENTS"):
         monkeypatch.delenv(name, raising=False)
     reloaded = reload_config()
-    assert reloaded.settings.max_pop_size == 500
-    assert reloaded.settings.density_cell == 0.00045
+    assert reloaded.settings.max_pop_size == 2000
+    assert reloaded.settings.density_cell == 0.0001
     assert reloaded.settings.poi_snap_m == 500.0
     assert reloaded.settings.scale_percents == (5, 10, 25, 50, 100)
 

@@ -42,12 +42,15 @@ def _env_percents(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
 class Settings:
     sources_dir: Path = Path(_env("DEMAND_SOURCES_DIR", str(PROJECT_ROOT / "data" / "sources")))
 
-    # grade (graus) de quantização dos pontos (~50 m a -23.5°): endereços mais próximos que
-    # isso viram um ponto só, o que também funde a ida e a volta de um mesmo trajeto.
-    density_cell: float = _env_float("DEMAND_DENSITY_CELL", 0.00045)
+    # grade (graus) de quantização dos pontos (~11 m a -23.5°): endereços mais próximos que
+    # isso viram um ponto só, o que também funde a ida e a volta de um mesmo trajeto. Refinar
+    # a grade quase não cria pops — quem define os trajetos é o par origem→destino da
+    # pesquisa —, e abaixo disso a geocodificação da fonte já não distingue endereços.
+    density_cell: float = _env_float("DEMAND_DENSITY_CELL", 0.0001)
     # tamanho máximo de pop: um pop é indivisível na simulação, então os grandes são
-    # fatiados. 0 = sem limite.
-    max_pop_size: int = _env_int("DEMAND_MAX_POP_SIZE", 500)
+    # fatiados. É o fatiamento que separa a contagem de pops do número de trajetos, então o
+    # limite é o que decide quantos pops a simulação carrega. 0 = sem limite.
+    max_pop_size: int = _env_int("DEMAND_MAX_POP_SIZE", 2000)
     # dimensionamentos publicados: cada um é uma fração (%) da demanda observada, e sai como um
     # pacote próprio em out/. A pesquisa expande ~35 M de viagens/dia, pesadas demais para a
     # simulação em qualquer máquina, então 100% (escala real) é o teto e não o padrão único.
@@ -72,10 +75,12 @@ class Settings:
     # conversão graus->metros a ~lat -23.5
     m_per_deg_lat: float = 110900.0
 
-    # viagens já geolocalizadas do repositório de dados (uma linha por viagem)
+    # viagens já geolocalizadas do repositório de dados (uma linha por viagem). A amostra
+    # completa não pesa a simulação — o que ela custa é o tamanho do arquivo, já que a carga
+    # simulada é o total de viagens/dia, que quem decide é o dimensionamento.
     flow_url: str = _env(
         "DEMAND_FLOW_URL",
-        "https://www.rodrigoroque.dev/transporte-sp-origem-destino/dados/fluxos_10k.parquet",
+        "https://www.rodrigoroque.dev/transporte-sp-origem-destino/dados/fluxos.parquet",
     )
     # OpenStreetMap: coordenadas dos equipamentos nomeados
     overpass_url: str = _env("DEMAND_OVERPASS_URL", "https://overpass-api.de/api/interpreter")
