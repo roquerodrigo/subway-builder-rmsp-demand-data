@@ -1,5 +1,7 @@
 # subway-builder-rmsp-demand-data
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white&style=for-the-badge)](https://github.com/sponsors/roquerodrigo)
+
 Gera **pops de demanda** (formato Subway Builder / [depot](https://github.com/Subway-Builder-Modded/depot)) a partir das **viagens observadas** da **Pesquisa Origem-Destino 2023** do Metrô-SP.
 
 Projeto enxuto: consome as viagens já geolocalizadas do repositório de dados [transporte-sp-origem-destino](https://www.rodrigoroque.dev/transporte-sp-origem-destino/dados/) — cada linha é uma viagem real, com a coordenada de origem e destino resolvidas — e as converte em pops. Não extrai a matriz nem resolve densidade intra-zona (isso é feito no repositório de dados). Não faz mapa base, roteamento nem bundle — isso fica com o depot / jogo.
@@ -74,3 +76,7 @@ src/demand_data/
   routing.py   # tempo/distância de carro via OSRM local
   cli.py
 ```
+
+## Apoie o projeto
+
+Este projeto é desenvolvido e mantido em tempo pessoal. Se for útil para você, considere [patrocinar o trabalho](https://github.com/sponsors/roquerodrigo) — é o que mantém o desenvolvimento, os testes e as publicações acontecendo.
